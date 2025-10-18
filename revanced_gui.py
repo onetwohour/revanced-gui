@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QHeaderView, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QSizePolicy, QTabWidget
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QTextCursor, QFontDatabase, QFont
+from PySide6.QtCore import Qt, QTimer, QCoreApplication
+from PySide6.QtGui import QTextCursor, QFontDatabase, QFont, QGuiApplication
 
 CLI_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-cli/releases/latest'
 PATCHES_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-patches-releases/releases/latest'
@@ -1362,6 +1362,19 @@ def setup_pretendard_font(font_storage_dir: Path) -> Optional[str]:
     return True
 
 def main():
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    if platform.system().lower() == "windows":
+        try:
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                pass
     app = QApplication(sys.argv)
     font_dir = Path.cwd() / "output" / "fonts"
     if setup_pretendard_font(font_dir):
