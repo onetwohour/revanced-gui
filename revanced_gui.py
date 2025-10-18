@@ -625,6 +625,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 def filter_rows(allow_universal: bool):
                     rows=[]
                     for e in entries:
+                        if not e.get("index", None): continue
                         pkgs=[p.lower() for p in e.get("packages",[])]
                         is_univ=(len(pkgs)==0)
                         if not pkg:
@@ -764,7 +765,9 @@ class PatchPickerDialog(QDialog):
         for e in rows:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            chk = QCheckBox(); chk.setChecked(bool(e.get("enabled")))
+            chk = QCheckBox()
+            chk.setChecked(bool(e.get("enabled")))
+            chk.stateChanged.connect(lambda s, entry=e: entry.__setitem__("enabled", s == Qt.Checked))
             cell = QWidget(); h = QHBoxLayout(cell); h.setContentsMargins(4,0,0,0); h.addWidget(chk); h.addStretch()
             self.table.setCellWidget(r, 0, cell)
             it_idx = QTableWidgetItem(str(e.get("index"))); it_name = QTableWidgetItem(e.get("name","")); it_pkgs = QTableWidgetItem(", ".join(e.get("packages",[])))
@@ -880,7 +883,7 @@ class App(QWidget):
         self.include_universal = QCheckBox("유니버설 패치 포함")
         self.exclusive = QCheckBox("선택한 패치만 적용 (권장)"); self.exclusive.setChecked(True)
         patch_opts_layout.addWidget(self.include_universal); patch_opts_layout.addWidget(self.exclusive)
-        self.btn_list = QPushButton("패치 목록 불러오기"); self.btn_list.clicked.connect(self.on_list_patches)
+        self.btn_list = QPushButton("패치 목록 새로고침"); self.btn_list.clicked.connect(self.on_list_patches)
         self.list_widget = QListWidget(); self.list_widget.setWordWrap(True); self.list_widget.setUniformItemSizes(False); self.list_widget.setSpacing(2)
         self.btn_picker = QPushButton("새 창에서 패치 선택하기"); self.btn_picker.clicked.connect(self.open_patch_picker)
         patch_file_btns = QHBoxLayout()
@@ -1018,11 +1021,12 @@ class App(QWidget):
                 self._pb_idle()
                 if getattr(self, "_auto_list_after_download", False):
                     self._auto_list_after_download = False
-                    QTimer.singleShot(0, self.on_list_patches)
+                    if self.pkg_edit.text(): QTimer.singleShot(0, self.on_list_patches)
             elif t == "patches":
                 self.entries = m.get("entries",[])
                 self.list_widget.clear()
                 for e in self.entries:
+                    if not e.get('index'): continue
                     label = f"[{e.get('index')}] {e.get('name','')}"
                     pkgs = e.get("packages",[])
                     if pkgs:
@@ -1149,8 +1153,21 @@ class App(QWidget):
 
     def open_patch_picker(self):
         if not self.entries:
-            QMessageBox.information(self, "안내", "먼저 ‘패치 목록 불러오기’를 실행해 주세요.")
+            QMessageBox.information(self, "안내", "먼저 ‘패치 목록 새로고침’을 실행해 주세요.")
             return
+        enabled_idx = set()
+        enabled_name = set()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                m = re.match(r'^\[(\d+)\]\s+(.*)$', item.text())
+                if m:
+                    enabled_idx.add(int(m.group(1)))
+                enabled_name.add(self._extract_item_name(item.text()))
+        for e in self.entries:
+            idx = e.get("index")
+            nm  = e.get("name","")
+            e["enabled"] = (idx in enabled_idx) or (nm in enabled_name)
         dlg = PatchPickerDialog(self.entries, self)
         dlg.showMaximized()
         if dlg.exec() == QDialog.Accepted:
@@ -1166,7 +1183,6 @@ class App(QWidget):
                     nm = self._extract_item_name(item.text())
                     is_on = any(nm == n or n in nm for n in names)
                 item.setCheckState(Qt.Checked if is_on else Qt.Unchecked)
-            self.log.append(f"[OK] 전체 화면 선택 적용: {len(want)}개 체크")
 
     def export_selection(self):
         path, _ = QFileDialog.getSaveFileName(self, "선택 내보내기", "patch_selection.txt", "Text (*.txt)")
@@ -1201,11 +1217,11 @@ class App(QWidget):
 
     def apply_clone_preset(self):
         if self.list_widget.count() == 0:
-            QMessageBox.information(self, "안내", "먼저 ‘패치 목록 불러오기’를 실행해 주세요.")
+            QMessageBox.information(self, "안내", "먼저 ‘패치 목록 새로고침’을 실행해 주세요.")
             return
+        QTimer.singleShot(0, self.on_list_patches)
         try:
             self.include_universal.setChecked(True)
-            self.on_list_patches()
         except Exception:
             pass
         try:
@@ -1213,54 +1229,6 @@ class App(QWidget):
                 self.exclusive.setChecked(True)
         except Exception:
             pass
-        def _extract_name(item_text: str) -> str:
-            m = re.match(r'^\s*\[\d+\]\s*(.+?)(?:\s*\(.*\))?\s*$', item_text)
-            return (m.group(1) if m else item_text).strip()
-        def _norm(s: str) -> str:
-            return re.sub(r'[^a-z0-9]+', '', s.lower())
-        alias_regexes = [
-            r'change.*packagename',
-            r'(ignore|bypass|remove).*packagename.*check',
-            r'update.*permissions',
-            r'update.*providers',
-        ]
-        patterns = [re.compile(p) for p in alias_regexes]
-        current_pkg = (self.pkg_edit.text() or "").strip().lower()
-        name_to_entry = {}
-        for e in self.entries:
-            name_to_entry[e.get("name","").strip()] = e
-        def is_compatible(item_text: str) -> bool:
-            nm = re.sub(r'^\s*\[\d+\]\s*', '', item_text).strip()
-            e = name_to_entry.get(self._extract_item_name(nm))
-            if not e:
-                return True
-            pkgs = [p.lower() for p in e.get("packages",[])]
-            return (len(pkgs) == 0) or (current_pkg and (current_pkg in pkgs))
-        hit = 0
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            name_raw = self._extract_item_name(item.text())
-            name_n = re.sub(r'[^a-z0-9]+', '', name_raw.lower())
-            wanted = any(p.search(name_n) for p in patterns) or (
-                ('package' in name_n and 'name' in name_n) and
-                any(k in name_n for k in ('ignore','bypass','remove','change','update'))
-            )
-            if wanted and is_compatible(item.text()):
-                if item.checkState() != Qt.Checked:
-                    item.setCheckState(Qt.Checked)
-                    hit += 1
-            else:
-                if item.checkState() != Qt.Unchecked:
-                    item.setCheckState(Qt.Unchecked)
-        if hit == 0:
-            for i in range(self.list_widget.count()):
-                item = self.list_widget.item(i)
-                name_raw = _extract_name(item.text())
-                name_n = _norm(name_raw)
-                if ('package' in name_n and 'name' in name_n) and any(k in name_n for k in ('ignore','bypass','remove','change','update')):
-                    if item.checkState() != Qt.Checked:
-                        item.setCheckState(Qt.Checked)
-                    hit += 1
         if hasattr(self, "update_perms"):
             self.update_perms.setChecked(True)
         if hasattr(self, "update_providers"):
@@ -1276,7 +1244,7 @@ class App(QWidget):
         if base_pkg:
             self.change_pkg_input.setText(base_pkg + ".revanced")
         if hasattr(self, "log"):
-            self.log.append(f"[PRESET] 프리셋 적용: {hit}개 변경됨, pkg={self.change_pkg_input.text().strip() or '(미지정)'}")
+            self.log.append(f"[PRESET] 프리셋 적용: pkg={self.change_pkg_input.text().strip() or '(미지정)'}")
 
     def on_build(self):
         if not self.cli_jar or not self.cli_jar.exists():
@@ -1296,15 +1264,21 @@ class App(QWidget):
         out_apk = (in_apk.parent / out_name)
         includes_by_idx: List[int] = []
         includes_by_name: List[str] = []
+        pkgs = {}
+        for e in self.entries:
+            pkgs[e['index']] = e['packages'] 
+            pkgs[e['name']] = e['packages'] 
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             if item.checkState() == Qt.Checked:
                 m = re.match(r'^\[(\d+)\]\s+(.*)$', item.text())
                 if m and m.group(1).isdigit():
-                    includes_by_idx.append(int(m.group(1)))
+                    m = int(m.group(1))
+                    if (self.include_universal.checkState() == Qt.Checked and not pkgs.get(m, True)) or self.pkg_edit.text() in pkgs.get(m, None):
+                        includes_by_idx.append(m)
                 else:
                     nm = self._extract_item_name(item.text())
-                    if nm:
+                    if (self.include_universal.checkState() == Qt.Checked and not pkgs.get(nm, True)) or self.pkg_edit.text() in pkgs.get(nm, None):
                         includes_by_name.append(nm)
         options: Dict[str, Optional[str]] = {}
         chpkg = self.change_pkg_input.text().strip()
@@ -1364,8 +1338,6 @@ def setup_pretendard_font(font_storage_dir: Path) -> Optional[str]:
 def main():
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
-    QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     if platform.system().lower() == "windows":
         try:
