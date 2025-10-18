@@ -10,15 +10,13 @@ on:
       preid:
         description: "optional prerelease id (e.g. beta, rc). leave blank for stable"
         required: false
-  push:
-    branches: [ main ]
-    paths:
-      - "revanced_gui.py"
-      - ".github/workflows/release-windows.yml"
-      - "requirements.txt"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-windows
+  cancel-in-progress: false
 
 jobs:
   build-windows:
@@ -29,8 +27,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute next tag (manual only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Compute next tag
         shell: bash
         run: |
           set -euo pipefail
@@ -50,25 +47,26 @@ jobs:
             NEXT="${NEXT}-${{ github.event.inputs.preid }}.${GITHUB_RUN_NUMBER}"
           fi
           echo "NEXT_TAG=${NEXT}" >> "$GITHUB_ENV"
+          echo "TAG=${NEXT}" >> "$GITHUB_ENV"
 
-      - name: Create & push tag (manual only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Create & push tag (idempotent)
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${NEXT_TAG}" -m "Release ${NEXT_TAG}"
-          git push origin "${NEXT_TAG}"
-
-      - name: Set TAG env
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+          if git rev-parse -q --verify "refs/tags/${NEXT_TAG}" >/dev/null; then
+            echo "Tag ${NEXT_TAG} already exists. Skipping creation."
           else
-            echo "TAG=${NEXT_TAG:-untagged}" >> "$GITHUB_ENV"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${NEXT_TAG}" -m "Release ${NEXT_TAG}"
+            git push origin "${NEXT_TAG}"
           fi
+
+      - name: Re-checkout at tag to lock source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.NEXT_TAG }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,28 +93,11 @@ jobs:
         with:
           arch: x64
 
-      - name: Compute TAG and SAFE_VERSION
+      - name: Compute SAFE_VERSION (from TAG)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          git fetch --tags --force --prune 2>$null
-          if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 }
-
           $tag = "${{ env.TAG }}"
-
-          if ([string]::IsNullOrWhiteSpace($tag) -or $tag -eq "untagged") {
-            $last = git describe --tags --abbrev=0 2>$null
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($last)) {
-              $global:LASTEXITCODE = 0
-              $yyMM = Get-Date -Format "yyMM"
-              $ddHH = Get-Date -Format "ddHH"
-              $tag  = "v0.0.$yyMM.$ddHH"
-            } else {
-              $tag = $last
-            }
-          }
-
           $ver = ($tag -replace '^v','') -replace '[^0-9\.]',''
           $rawParts = @()
           foreach ($p in ($ver -split '\.')) { if ($p -match '^\d+$') { $rawParts += $p } }
@@ -129,12 +110,8 @@ jobs:
             }
           }
           $safe = ($out -join '.')
-
-          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
           "SAFE_VERSION=$safe" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "TAG=$tag SAFE_VERSION=$safe"
-
-          $global:LASTEXITCODE = 0
 
       - name: Build with Nuitka
         shell: pwsh
@@ -162,6 +139,7 @@ jobs:
           path: dist/revanced_gui.exe
 
       - name: Create GitHub Release
+        if: ${{ success() }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
