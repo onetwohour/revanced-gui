@@ -33,21 +33,36 @@ jobs:
           set -euo pipefail
           git fetch --tags --force --prune
           LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
-          if [[ -z "${LAST_TAG}" ]]; then LAST_TAG="v0.0.0"; fi
-          ver="${LAST_TAG#v}"
-          IFS='.' read -r MA MI PA <<<"${ver}"
+          [[ -z "${LAST_TAG}" ]] && LAST_TAG="v0.0"
+          raw="${LAST_TAG//$'\r'/}"
+          raw="${raw#v}"
+          raw="${raw%%-*}"
+          MA=0; MI=0
+          if [[ "$raw" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]{4}\.[0-9]{4})?$ ]]; then
+            MA="${BASH_REMATCH[1]}"
+            MI="${BASH_REMATCH[2]}"
+          else
+            IFS='.' read -r _ma _mi _rest <<< "$raw"
+            [[ "${_ma:-}" =~ ^[0-9]+$ ]] && MA="${_ma#0}" || MA=0
+            [[ "${_mi:-}" =~ ^[0-9]+$ ]] && MI="${_mi#0}" || MI=0
+          fi
+          YYMM="$(date -u +%y%m)"
+          DDHH="$(date -u +%d%H)"
           case "${{ github.event.inputs.release_type }}" in
-            patch) ((PA=PA+1));;
-            minor) ((MI=MI+1)); PA=0;;
-            major) ((MA=MA+1)); MI=0; PA=0;;
-            *) echo "invalid release_type"; exit 1;;
+            patch) ;;
+            minor) ((MI++)) ;;
+            major) ((MA++)); MI=0 ;;
+            *) echo "invalid release_type"; exit 1 ;;
           esac
-          NEXT="v${MA}.${MI}.${PA}"
+          NEXT="v${MA}.${MI}.${YYMM}.${DDHH}"
           if [[ -n "${{ github.event.inputs.preid }}" ]]; then
             NEXT="${NEXT}-${{ github.event.inputs.preid }}.${GITHUB_RUN_NUMBER}"
           fi
-          echo "NEXT_TAG=${NEXT}" >> "$GITHUB_ENV"
-          echo "TAG=${NEXT}" >> "$GITHUB_ENV"
+          {
+            echo "NEXT_TAG=${NEXT}"
+            echo "TAG=${NEXT}"
+          } >> "$GITHUB_ENV"
+          echo "Next tag: ${NEXT}"
 
       - name: Create & push tag (idempotent)
         shell: bash
