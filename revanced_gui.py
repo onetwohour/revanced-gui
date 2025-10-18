@@ -1283,11 +1283,11 @@ class App(QWidget):
         options: Dict[str, Optional[str]] = {}
         chpkg = self.change_pkg_input.text().strip()
         if chpkg:
-            options["changePackageName"] = chpkg
+            options["packageName"] = chpkg
         if self.update_perms.isChecked():
-            options["updatePermissions"] = ""
+            options["updatePermissions"] = "true"
         if self.update_providers.isChecked():
-            options["updateProviders"] = ""
+            options["updateProviders"] = "true"
         keystore = self.keystore_edit.text().strip()
         ks_pass = self.ks_pass.text().strip()
         alias = self.alias.text().strip()
