@@ -1343,8 +1343,8 @@ class App(QWidget):
         self.log.append("[RUN] 빌드 시작")
 
 def setup_pretendard_font(font_storage_dir: Path) -> Optional[str]:
-    font_url = "https://cdn.jsdelivr.net/npm/pretendard-std@1.3.9/dist/public/variable/PretendardStdVariable.ttf"
-    font_filename = "PretendardStdVariable.ttf"
+    font_url = "https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/public/variable/PretendardVariable.ttf"
+    font_filename = "PretendardVariable.ttf"
     font_path = font_storage_dir / font_filename
     font_storage_dir.mkdir(parents=True, exist_ok=True)
     if not font_path.exists():
@@ -1359,15 +1359,13 @@ def setup_pretendard_font(font_storage_dir: Path) -> Optional[str]:
     family_names = QFontDatabase.applicationFontFamilies(font_id)
     if not family_names:
         return None
-    font_family_name = family_names[0]
-    return font_family_name
+    return True
 
 def main():
     app = QApplication(sys.argv)
     font_dir = Path.cwd() / "output" / "fonts"
-    font_family = setup_pretendard_font(font_dir)
-    if font_family:
-        app.setFont(QFont(font_family, 10))
+    if setup_pretendard_font(font_dir):
+        app.setFont(QFont("Pretendard Variable SemiBold", 11))
     w = App()
     w.show()
     sys.exit(app.exec())
