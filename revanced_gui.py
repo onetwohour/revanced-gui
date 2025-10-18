@@ -671,6 +671,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 if alias: cmdline += ["--key-alias", alias]
                 if alias_pass: cmdline += ["--key-password", alias_pass]
                 cmdline += ["--temporary-files-path", str(tmp_path), "-o", str(out_apk), str(apk)]
+                out_q.put({"type":"build_begin"})
                 out_q.put({"type":"log","text":"[CMD] " + " ".join(f"\"{c}\"" if " " in c else c for c in cmdline)})
                 retry_tmp = None
                 try:
@@ -685,6 +686,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     if retry_tmp:
                         ok2 = _safe_rmtree_force(retry_tmp)
                     out_q.put({"type":"log","text":"[CLEAN] 임시폴더 삭제 완료" if (ok1 and ok2) else "[CLEAN] 일부 임시폴더는 재부팅 시 삭제 예약됨"})
+                    out_q.put({"type":"build_end"})
                     out_q.put({"type":"done"})
             elif cmd == "adb_devices":
                 _adb_start_server(out_q)
@@ -1033,6 +1035,10 @@ class App(QWidget):
                 val = m.get("value")
                 if val:
                     self.pkg_edit.setText(val)
+            elif t == "build_begin":
+                self._pb_busy()
+            elif t == "build_end":
+                self._pb_idle()
             elif t == "build_ok":
                 self.log.append(f"[DONE] 빌드 완료 → {m.get('apk')}")
                 if self.adb_install.isChecked():
