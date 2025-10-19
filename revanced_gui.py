@@ -5,6 +5,13 @@ from typing import List, Dict, Tuple, Optional
 from multiprocessing import Process, Queue
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleOutputCP(65001)
+    except:
+        pass
 
 import requests
 from PySide6.QtWidgets import (
@@ -12,9 +19,9 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QTextEdit, QCheckBox, QProgressBar, QMessageBox,
     QListWidget, QListWidgetItem, QSplitter, QGroupBox, QFormLayout,
     QHeaderView, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
-    QAbstractItemView, QSizePolicy, QTabWidget
+    QAbstractItemView, QSizePolicy, QTabWidget, QComboBox, QScrollArea
 )
-from PySide6.QtCore import Qt, QTimer, QCoreApplication
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor, QFontDatabase, QFont, QGuiApplication
 
 CLI_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-cli/releases/latest'
@@ -104,13 +111,6 @@ def _prepend_to_path(p: Path):
         os.environ["PATH"] = s + (";" + cur if cur else "")
 
 def _run_capture(cmd, cwd=None, env=None) -> Tuple[int, str, str]:
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            kernel32.SetConsoleOutputCP(65001)
-        except:
-            pass
     p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_WIN_NO_WINDOW)
     out_b, err_b = p.communicate()
     return p.returncode, _safe_decode(out_b), _safe_decode(err_b)
@@ -362,23 +362,65 @@ def _run_cli_list_patches(cli_jar: Path, rvp_path: Path) -> str:
 
 def _parse_patches(text: str):
     entries = []
-    for blk in re.split(r'\n{2,}', text):
-        mi = re.search(r'(?mi)^\s*Index:\s*(\d+)\s*$', blk)
-        mn = re.search(r'(?mi)^\s*Name:\s*(.+?)\s*$', blk)
-        me = re.search(r'(?mi)^\s*Enabled:\s*(true|false)\s*$', blk)
-        mp = re.search(r'(?ms)^(?:Packages?|Compatible packages?):\s*(.+?)(?:\n[A-Z][A-Za-z ]+?:|\Z)', blk)
+    for blk in re.split(r'\n{2,}', text.strip()):
+        if not blk.strip():
+            continue
+        patch_dict = {}
+        main_info_text = blk
+        options_text = None
+        options_match = re.search(r'(?m)^\s*Options:\s*$', blk) 
+        if options_match:
+            main_info_text = blk[:options_match.start()].strip()
+            options_text = blk[options_match.end():].strip()
+        mi = re.search(r'(?mi)^\s*(?:정보:\s*)?Index:\s*(\d+)\s*$', main_info_text)
+        mn = re.search(r'(?mi)^\s*Name:\s*(.+?)\s*$', main_info_text)
+        md = re.search(r'(?ms)^\s*Description:\s*(.+?)(?=\n\s*(?:[A-Z][a-z]+:|\Z))', main_info_text)
+        me = re.search(r'(?mi)^\s*Enabled:\s*(true|false)\s*$', main_info_text)
+        mp = re.search(r'(?ms)^(?:Packages?|Compatible packages?):\s*(.+?)(?:\n[A-Z][A-Za-z ]+?:|\Z)', main_info_text) or re.search(r'(?ms)^(?:Packages?|Compatible packages?):\s*(.+?)(?:\n[A-Z][A-Za-z ]+?:|\Z)', blk)
         pkgs = []
         if mp:
             body = mp.group(1)
             pkgs = re.findall(r'\b[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+\b', body)
-        if mn:
-            entries.append({
-                "index": int(mi.group(1)) if mi else None,
-                "name": mn.group(1).strip(),
-                "enabled": (me and me.group(1).lower() == "true"),
-                "packages": pkgs,
-                "raw": blk
-            })
+        if not mn:
+            continue
+        patch_dict = {
+            "index": int(mi.group(1)) if mi else None,
+            "name": mn.group(1).strip(),
+            "description": md.group(1).strip() if md else None,
+            "enabled": (me and me.group(1).lower() == "true"),
+            "packages": pkgs
+        }
+        if options_text:
+            patch_dict["options"] = []
+            option_sub_blocks = re.split(r'(?m)(?=\n\s*Title:)', options_text)
+            for opt_block in option_sub_blocks:
+                opt_block = opt_block.strip()
+                if not opt_block:
+                    continue
+                opt_dict = {}
+                m_title = re.search(r'(?m)^\s*Title:\s*(.+)', opt_block)
+                m_opt_desc = re.search(r'(?ms)^\s*Description:\s*(.+?)(?=\n\s*(?:[A-Z][a-z]+:|\Z))', opt_block)
+                m_req = re.search(r'(?m)^\s*Required:\s*(.+)', opt_block)
+                m_key = re.search(r'(?m)^\s*Key:\s*(.+)', opt_block)
+                m_type = re.search(r'(?m)^\s*Type:\s*(.+)', opt_block)
+                m_default = re.search(r'(?m)^\s*Default:\s*([^\n\r]+)', opt_block)
+
+                if m_title: opt_dict['title'] = m_title.group(1).strip()
+                if m_opt_desc: opt_dict['description'] = m_opt_desc.group(1).strip()
+                if m_req: opt_dict['required'] = (m_req.group(1).strip().lower() == 'true')
+                if m_key: opt_dict['key'] = m_key.group(1).strip()
+                if m_type: opt_dict['type'] = m_type.group(1).strip()
+                if m_default: opt_dict['default'] = m_default.group(1).strip()
+
+                m_pv = re.search(r'(?ms)^\s*Possible values:\s*\n(.+?)(?=\n\s*(?:[A-Z][a-z]+:|\Z))', opt_block)
+                if m_pv:
+                    pv_text = m_pv.group(1)
+                    pv_list = [line.strip() for line in pv_text.splitlines() if line.strip()]
+                    opt_dict['possible_values'] = pv_list
+                
+                if opt_dict:
+                    patch_dict["options"].append(opt_dict)
+        entries.append(patch_dict)
     return entries
 
 def _find_aapt_bins() -> List[Path]:
@@ -660,18 +702,20 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 tmp_path = tmp_base / datetime.now().strftime("tmp-%Y%m%d-%H%M%S")
                 _ensure_dir(tmp_path)
                 _win_set_not_content_indexed(tmp_path)
-                cmdline = ["java","-Dsun.zip.disableMemoryMapping=true","-Djdk.nio.zipfs.useTempFile=true","-jar",str(cli),"patch","-p",str(rvp)]
-                if exclusive: cmdline.append("--exclusive")
-                for i in includes_by_idx: cmdline += ["--ei", str(i)]
-                for n in includes_by_name: cmdline += ["-e", n]
-                for k,v in options.items():
-                    if v in (None,""): cmdline.append(f"-O{k}")
-                    else: cmdline.append(f"-O{k}={v}")
-                if keystore: cmdline += ["--keystore", str(keystore)]
-                if ks_pass: cmdline += ["--keystore-password", ks_pass]
-                if alias: cmdline += ["--key-alias", alias]
-                if alias_pass: cmdline += ["--key-password", alias_pass]
-                cmdline += ["--temporary-files-path", str(tmp_path), "-o", str(out_apk), str(apk)]
+                cmdline = msg.get("cmdline")
+                if not cmdline:
+                    cmdline = ["java","-jar",str(cli),"patch","-p",str(rvp)]
+                    if exclusive: cmdline.append("--exclusive")
+                    for i in includes_by_idx: cmdline += ["--ei", str(i)]
+                    for n in includes_by_name: cmdline += ["-e", n]
+                    for k,v in options.items():
+                        if v in (None,"", "true"): cmdline.append(f"-O{k}")
+                        else: cmdline.append(f"-O{k}={v}")
+                    if keystore: cmdline += ["--keystore", str(keystore)]
+                    if ks_pass: cmdline += ["--keystore-password", ks_pass]
+                    if alias: cmdline += ["--key-alias", alias]
+                    if alias_pass: cmdline += ["--key-password", alias_pass]
+                    cmdline += ["--temporary-files-path", str(tmp_path), "-o", str(out_apk), str(apk)]
                 out_q.put({"type":"build_begin"})
                 out_q.put({"type":"log","text":"[CMD] " + " ".join(f"\"{c}\"" if " " in c else c for c in cmdline)})
                 retry_tmp = None
@@ -919,7 +963,18 @@ class App(QWidget):
         opt.addRow(self.update_perms); opt.addRow(self.update_providers)
         opt.addRow("Keystore", ks_row); opt.addRow("Keystore 비밀번호", self.ks_pass)
         opt.addRow("Key alias", self.alias); opt.addRow("Key 비밀번호", self.alias_pass)
-        opt_box.setLayout(opt)
+        self.dynamic_options_box = QGroupBox("패치별 세부 옵션")
+        self.dynamic_options_layout = QFormLayout()
+        self.dynamic_options_box.setLayout(self.dynamic_options_layout)
+        self.dynamic_options_scroll_area = QScrollArea()
+        self.dynamic_options_scroll_area.setWidgetResizable(True)
+        self.dynamic_options_scroll_area.setWidget(self.dynamic_options_box)
+        self.dynamic_options_scroll_area.setVisible(False)
+        self.dynamic_options_scroll_area.setMaximumHeight(300)
+        opt_v_layout = QVBoxLayout()
+        opt_v_layout.addLayout(opt)
+        opt_v_layout.addWidget(self.dynamic_options_scroll_area)
+        opt_box.setLayout(opt_v_layout)
         patch_layout.addWidget(opt_box)
         patch_layout.addStretch(1)
         build_box = QGroupBox("6. 빌드 실행")
@@ -964,6 +1019,8 @@ class App(QWidget):
         split.setStretchFactor(0,0); split.setStretchFactor(1,1); split.setSizes([720,900])
         root.addWidget(split)
         self.entries = []
+        self.dynamic_option_widgets: Dict[str, QWidget] = {}
+        self.list_widget.itemChanged.connect(self._update_dynamic_options)
         QTimer.singleShot(0, self.on_env_check)
 
     def _pb_busy(self):
@@ -1024,9 +1081,13 @@ class App(QWidget):
                     if self.pkg_edit.text(): QTimer.singleShot(0, self.on_list_patches)
             elif t == "patches":
                 self.entries = m.get("entries",[])
+                try:
+                    self.list_widget.itemChanged.disconnect(self._update_dynamic_options)
+                except RuntimeError:
+                    pass
                 self.list_widget.clear()
                 for e in self.entries:
-                    if not e.get('index'): continue
+                    if e.get('index') is None: continue
                     label = f"[{e.get('index')}] {e.get('name','')}"
                     pkgs = e.get("packages",[])
                     if pkgs:
@@ -1034,6 +1095,8 @@ class App(QWidget):
                     item = QListWidgetItem(label)
                     item.setCheckState(Qt.Checked if e.get("enabled") else Qt.Unchecked)
                     self.list_widget.addItem(item)
+                self.list_widget.itemChanged.connect(self._update_dynamic_options)
+                self._update_dynamic_options()
                 self._pb_idle()
             elif t == "pkg":
                 val = m.get("value")
@@ -1081,6 +1144,59 @@ class App(QWidget):
         if drained:
             self.log.moveCursor(QTextCursor.End)
             self.log.ensureCursorVisible()
+
+    def _update_dynamic_options(self, item: Optional[QListWidgetItem] = None):
+        while self.dynamic_options_layout.count():
+            child = self.dynamic_options_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.dynamic_option_widgets.clear()
+        selected_patch_indices = set()
+        for i in range(self.list_widget.count()):
+            list_item = self.list_widget.item(i)
+            if list_item.checkState() == Qt.Checked:
+                match = re.match(r'^\[(\d+)\]', list_item.text())
+                if match and match.group(1).isdigit():
+                    selected_patch_indices.add(int(match.group(1)))
+        found_options = False
+        for patch in self.entries:
+            patch_index = patch.get("index")
+            if patch_index is not None and patch_index in selected_patch_indices and "options" in patch:
+                for option in patch['options']:
+                    key = option.get('key')
+                    if not key: continue
+                    if key in {"packageName", "updatePermissions", "updateProviders"}: continue
+                    title = option.get('title', key)
+                    desc = option.get('description', '')
+                    default_val = option.get('default')
+                    widget = None
+                    if "possible_values" in option:
+                        widget = QComboBox()
+                        items = option["possible_values"]
+                        widget.addItems(option["possible_values"])
+                        widget.setToolTip(desc)
+                        if default_val is not None:
+                            found_idx = -1
+                            for i, item_text in enumerate(items):
+                                if item_text.strip().startswith(default_val):
+                                    found_idx = i
+                                    break
+                            if found_idx != -1:
+                                widget.setCurrentIndex(found_idx)
+                    else:
+                        widget = QLineEdit()
+                        widget.setPlaceholderText(desc)
+                        if default_val is not None:
+                            widget.setText(default_val)
+                        else:
+                            widget.setPlaceholderText(desc)
+                    if widget:
+                        label = title
+                        self.dynamic_options_layout.addRow(label, widget)
+                        widget_key = f"{patch_index}_{key}"
+                        self.dynamic_option_widgets[widget_key] = widget
+                        found_options = True
+        self.dynamic_options_scroll_area.setVisible(found_options)
 
     @staticmethod
     def _extract_item_name(item_text: str) -> str:
@@ -1173,6 +1289,10 @@ class App(QWidget):
         if dlg.exec() == QDialog.Accepted:
             idxs, names = dlg.get_enabled()
             want = set(idxs)
+            try:
+                self.list_widget.itemChanged.disconnect(self._update_dynamic_options)
+            except RuntimeError:
+                pass
             for i in range(self.list_widget.count()):
                 item = self.list_widget.item(i)
                 m = re.match(r'^\[(\d+)\]\s+(.*)$', item.text())
@@ -1183,6 +1303,8 @@ class App(QWidget):
                     nm = self._extract_item_name(item.text())
                     is_on = any(nm == n or n in nm for n in names)
                 item.setCheckState(Qt.Checked if is_on else Qt.Unchecked)
+            self.list_widget.itemChanged.connect(self._update_dynamic_options)
+            self._update_dynamic_options()
 
     def export_selection(self):
         path, _ = QFileDialog.getSaveFileName(self, "선택 내보내기", "patch_selection.txt", "Text (*.txt)")
@@ -1206,6 +1328,10 @@ class App(QWidget):
                 line=line.strip()
                 if line.isdigit(): want.add(int(line))
         hit=0
+        try:
+            self.list_widget.itemChanged.disconnect(self._update_dynamic_options)
+        except RuntimeError:
+            pass
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             m = re.match(r'^\[(\d+)\]\s+', item.text())
@@ -1213,6 +1339,8 @@ class App(QWidget):
                 item.setCheckState(Qt.Checked); hit+=1
             else:
                 item.setCheckState(Qt.Unchecked)
+        self.list_widget.itemChanged.connect(self._update_dynamic_options)
+        self._update_dynamic_options()
         self.log.append(f"[OK] 불러온 인덱스 {len(want)}개 중 {hit}개 적용")
 
     def apply_clone_preset(self):
@@ -1244,7 +1372,7 @@ class App(QWidget):
         if base_pkg:
             self.change_pkg_input.setText(base_pkg + ".revanced")
         if hasattr(self, "log"):
-            self.log.append(f"[PRESET] 프리셋 적용: pkg={self.change_pkg_input.text().strip() or '(미지정)'}")
+            self.log.append(f"[PRESET] 프리셋 적용: pkg={base_pkg or '(미지정)'}")
 
     def on_build(self):
         if not self.cli_jar or not self.cli_jar.exists():
@@ -1264,38 +1392,103 @@ class App(QWidget):
         out_apk = (in_apk.parent / out_name)
         includes_by_idx: List[int] = []
         includes_by_name: List[str] = []
-        pkgs = {}
+        index_to_option_keys: Dict[int, List[str]] = {}
+        name_to_option_keys: Dict[str, List[str]] = {}
+        pkgs_map: Dict[Union[int, str], List[str]] = {}
         for e in self.entries:
-            pkgs[e['index']] = e['packages'] 
-            pkgs[e['name']] = e['packages'] 
+            idx = e.get("index")
+            name = e.get("name")
+            packages = e.get('packages', [])
+            option_keys = [opt['key'] for opt in e.get('options', []) if opt.get('key')]
+            if idx is not None:
+                pkgs_map[idx] = packages
+                if option_keys:
+                    index_to_option_keys[idx] = option_keys
+            if name:
+                pkgs_map[name] = packages
+                if option_keys:
+                    name_to_option_keys[name] = option_keys
+
+        current_pkg = (self.pkg_edit.text() or "").strip().lower()
+        include_universal_checked = self.include_universal.isChecked()
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             if item.checkState() == Qt.Checked:
                 m = re.match(r'^\[(\d+)\]\s+(.*)$', item.text())
-                if m and m.group(1).isdigit():
-                    m = int(m.group(1))
-                    if (self.include_universal.checkState() == Qt.Checked and not pkgs.get(m, True)) or self.pkg_edit.text() in pkgs.get(m, None):
-                        includes_by_idx.append(m)
-                else:
-                    nm = self._extract_item_name(item.text())
-                    if (self.include_universal.checkState() == Qt.Checked and not pkgs.get(nm, True)) or self.pkg_edit.text() in pkgs.get(nm, None):
+                nm = self._extract_item_name(item.text())
+                idx = int(m.group(1)) if m and m.group(1).isdigit() else None
+                pkg_list_for_this_patch = []
+                identifier = idx if idx is not None else nm
+                if identifier in pkgs_map:
+                    pkg_list_for_this_patch = pkgs_map[identifier]
+                is_universal = (len(pkg_list_for_this_patch) == 0)
+                is_for_this_pkg = bool(current_pkg and current_pkg in [p.lower() for p in pkg_list_for_this_patch])
+                if (include_universal_checked and is_universal) or is_for_this_pkg:
+                    if idx is not None:
+                        includes_by_idx.append(idx)
+                    elif nm:
                         includes_by_name.append(nm)
-        options: Dict[str, Optional[str]] = {}
+        all_options_values: Dict[str, Optional[str]] = {}
         chpkg = self.change_pkg_input.text().strip()
         if chpkg:
-            options["packageName"] = chpkg
+            all_options_values["packageName"] = chpkg
         if self.update_perms.isChecked():
-            options["updatePermissions"] = "true"
+            all_options_values["updatePermissions"] = "true"
         if self.update_providers.isChecked():
-            options["updateProviders"] = "true"
+            all_options_values["updateProviders"] = "true"
+        for widget_key, widget in self.dynamic_option_widgets.items():
+            value = ""
+            if isinstance(widget, QLineEdit):
+                value = widget.text().strip()
+            elif isinstance(widget, QComboBox):
+                current_text = widget.currentText()
+                match = re.match(r'^\s*([a-zA-Z0-9_-]+)', current_text)
+                if match:
+                    value = match.group(1)
+                else:
+                    value = current_text
+            if value:
+                try:
+                    original_key = widget_key.split('_', 1)[1]
+                    all_options_values[original_key] = value
+                except IndexError:
+                    pass
+        cmdline = ["java","-jar",str(self.cli_jar),"patch","-p",str(self.rvp_file)]
+        if self.exclusive.isChecked():
+            cmdline.append("--exclusive")
+        used_option_keys = set()
+        for idx in includes_by_idx:
+            cmdline.extend(["--ei", str(idx)])
+            if idx in index_to_option_keys:
+                for key in index_to_option_keys[idx]:
+                    if key in all_options_values:
+                        value = all_options_values[key]
+                        if value in (None, "", "true"):
+                            cmdline.append(f"-O{key}")
+                        else:
+                            cmdline.append(f"-O{key}={value}")
+                        used_option_keys.add(key)
+        for name in includes_by_name:
+            cmdline.extend(["-e", name])
+        for key, value in all_options_values.items():
+            if key not in used_option_keys:
+                 if value in (None, "", "true"):
+                     cmdline.append(f"-O{key}")
+                 else:
+                     cmdline.append(f"-O{key}={value}")
         keystore = self.keystore_edit.text().strip()
         ks_pass = self.ks_pass.text().strip()
         alias = self.alias.text().strip()
         alias_pass = self.alias_pass.text().strip()
+        if keystore: cmdline += ["--keystore", str(keystore)]
+        if ks_pass: cmdline += ["--keystore-password", ks_pass]
+        if alias: cmdline += ["--key-alias", alias]
+        if alias_pass: cmdline += ["--key-password", alias_pass]
         tmp_base = self.tmp_dir_edit.text().strip()
         if not tmp_base:
             tmp_base = str(self.out_dir / "work")
         _ensure_dir(Path(tmp_base))
+        cmdline += ["--temporary-files-path", str(Path(tmp_base)), "-o", str(out_apk), str(in_apk)]
         self._pb_busy()
         self._qin.put({
             "cmd":"build",
@@ -1304,9 +1497,10 @@ class App(QWidget):
             "apk":str(in_apk),
             "out_apk":str(out_apk),
             "exclusive":self.exclusive.isChecked(),
-            "includes_by_idx":includes_by_idx,
-            "includes_by_name":includes_by_name,
-            "options":options,
+            "includes_by_idx": includes_by_idx,
+            "includes_by_name": includes_by_name,
+            "options": all_options_values,
+            "cmdline": cmdline,
             "keystore":keystore if keystore else "",
             "ks_pass":ks_pass if ks_pass else "",
             "alias":alias if alias else "",
