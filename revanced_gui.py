@@ -1514,7 +1514,7 @@ class App(QWidget):
                 for key in index_to_option_keys[idx]:
                     if key in all_options_values:
                         value = all_options_values[key]
-                        if value in (None, "", "true"):
+                        if value in (None, ""):
                             cmdline.append(f"-O{key}")
                         else:
                             cmdline.append(f"-O{key}={value}")
@@ -1523,7 +1523,7 @@ class App(QWidget):
             cmdline.extend(["-e", name])
         for key, value in all_options_values.items():
             if key not in used_option_keys:
-                 if value in (None, "", "true"):
+                 if value in (None, ""):
                      cmdline.append(f"-O{key}")
                  else:
                      cmdline.append(f"-O{key}={value}")
