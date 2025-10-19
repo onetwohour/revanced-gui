@@ -970,7 +970,7 @@ class App(QWidget):
         self.dynamic_options_scroll_area.setWidgetResizable(True)
         self.dynamic_options_scroll_area.setWidget(self.dynamic_options_box)
         self.dynamic_options_scroll_area.setVisible(False)
-        self.dynamic_options_scroll_area.setMaximumHeight(300)
+        self.dynamic_options_scroll_area.setMaximumHeight(250)
         opt_v_layout = QVBoxLayout()
         opt_v_layout.addLayout(opt)
         opt_v_layout.addWidget(self.dynamic_options_scroll_area)
@@ -1188,8 +1188,13 @@ class App(QWidget):
                         widget.setPlaceholderText(desc)
                         if default_val is not None:
                             widget.setText(default_val)
+                            if default_val.strip().startswith('[') and default_val.strip().endswith(']'):
+                                widget.setProperty("is_list_type", True)
+                            else:
+                                widget.setProperty("is_list_type", False)
                         else:
                             widget.setPlaceholderText(desc)
+                            widget.setProperty("is_list_type", False)
                     if widget:
                         label = title
                         self.dynamic_options_layout.addRow(label, widget)
@@ -1440,6 +1445,10 @@ class App(QWidget):
             value = ""
             if isinstance(widget, QLineEdit):
                 value = widget.text().strip()
+                is_list = widget.property("is_list_type")
+                if is_list:
+                    stripped_value = value.strip().strip('[]').strip()
+                    value = f"[{stripped_value}]"
             elif isinstance(widget, QComboBox):
                 current_text = widget.currentText()
                 match = re.match(r'^\s*([a-zA-Z0-9_-]+)', current_text)
