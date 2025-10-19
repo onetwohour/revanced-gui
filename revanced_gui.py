@@ -569,7 +569,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 out_q.put({"type":"done"})
             elif cmd == "install_java":
                 if _os_name()=="windows" and _which("winget"):
-                    out_q.put({"type":"log","text":"winget Temurin 21 실행"})
+                    out_q.put({"type":"log","text":"winget Temurin 17 실행"})
                     ok_by_winget = _winget_install_or_ok("EclipseAdoptium.Temurin.17.JDK", out_q)
                     _refresh_windows_env_from_registry()
                     for p in _iter_windows_java_bins():
@@ -583,7 +583,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     msi_url = _find_temurin_msi_url(out_q)
                     if not msi_url:
                         out_q.put({"type":"fail","error":"MSI url not found"}); out_q.put({"type":"done"}); continue
-                    msi_path = Path(tempfile.gettempdir())/"temurin21.msi"
+                    msi_path = Path(tempfile.gettempdir())/"temurin17.msi"
                     _download_file(msi_url, msi_path, out_q, target_key="java-msi")
                     code = _run_stream_worker(["msiexec","/i",str(msi_path),"/qn"], out_q)
                     if code==0:
@@ -593,7 +593,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     else:
                         out_q.put({"type":"fail","error":f"msiexec code={code}"}); out_q.put({"type":"done"})
                 elif _os_name()=="darwin" and _which("brew"):
-                    code = _run_stream_worker(["brew","install","--cask","temurin"], out_q)
+                    code = _run_stream_worker(["brew","install","--cask","temurin17"], out_q)
                     out_q.put({"type":"done"} if code==0 else {"type":"fail","error":f"brew code={code}"}); out_q.put({"type":"done"})
                 else:
                     pkg_cmds = [
