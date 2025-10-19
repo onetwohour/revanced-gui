@@ -1,7 +1,7 @@
 import os, sys, re, shutil, subprocess, platform, tempfile, time, ctypes, stat, queue, urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from multiprocessing import Process, Queue
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -1170,21 +1170,46 @@ class App(QWidget):
                     desc = option.get('description', '')
                     default_val = option.get('default')
                     widget = None
+                    custom_option_text = "직접 입력..."
                     if "possible_values" in option:
-                        widget = QComboBox()
+                        widget = QWidget()
+                        widget.setProperty("is_composite", True)
+                        layout = QHBoxLayout(widget)
+                        layout.setContentsMargins(0, 0, 0, 0)
+                        combo = QComboBox()
                         items = option["possible_values"]
-                        widget.addItems(option["possible_values"])
-                        widget.setToolTip(desc)
+                        combo.addItems(items)
+                        combo.addItem(custom_option_text)
+                        combo.setToolTip(desc)
+                        line_edit = QLineEdit()
+                        line_edit.setPlaceholderText("사용자 정의 값 입력")
+                        line_edit.setVisible(False)
+                        layout.addWidget(combo)
+                        layout.addWidget(line_edit)
+                        is_list_type = False
                         if default_val is not None:
+                            if default_val.strip().startswith('[') and default_val.strip().endswith(']'):
+                                is_list_type = True
                             found_idx = -1
                             for i, item_text in enumerate(items):
                                 if item_text.strip().startswith(default_val):
                                     found_idx = i
                                     break
                             if found_idx != -1:
-                                widget.setCurrentIndex(found_idx)
+                                combo.setCurrentIndex(found_idx)
+                            else:
+                                combo.setCurrentText(custom_option_text)
+                                line_edit.setText(default_val)
+                                line_edit.setVisible(True)
+                        line_edit.setProperty("is_list_type", is_list_type)
+                        combo.currentTextChanged.connect(
+                            lambda text, le=line_edit, custom_text=custom_option_text: le.setVisible(text == custom_text)
+                        )
+                        widget.setProperty("combo_widget", combo)
+                        widget.setProperty("line_edit_widget", line_edit)
                     else:
                         widget = QLineEdit()
+                        widget.setProperty("is_composite", False)
                         widget.setPlaceholderText(desc)
                         if default_val is not None:
                             widget.setText(default_val)
@@ -1443,7 +1468,25 @@ class App(QWidget):
             all_options_values["updateProviders"] = "true"
         for widget_key, widget in self.dynamic_option_widgets.items():
             value = ""
-            if isinstance(widget, QLineEdit):
+            is_composite = widget.property("is_composite")
+            if is_composite:
+                combo = widget.property("combo_widget")
+                line_edit = widget.property("line_edit_widget")
+                custom_option_text = "직접 입력..."
+                if combo.currentText() == custom_option_text:
+                    value = line_edit.text().strip()
+                    is_list = line_edit.property("is_list_type")
+                    if is_list:
+                        stripped_value = value.strip().strip('[]').strip()
+                        value = f"[{stripped_value}]"
+                else:
+                    current_text = combo.currentText()
+                    match = re.match(r'^\s*([a-zA-Z0-9_-]+)', current_text)
+                    if match:
+                        value = match.group(1)
+                    else:
+                        value = current_text
+            elif isinstance(widget, QLineEdit):
                 value = widget.text().strip()
                 is_list = widget.property("is_list_type")
                 if is_list:
