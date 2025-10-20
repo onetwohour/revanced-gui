@@ -943,7 +943,7 @@ class App(QWidget):
         patch_layout.addWidget(patch_box)
         opt_box = QGroupBox("5. 빌드 옵션")
         opt = QFormLayout()
-        self.change_pkg_input = QLineEdit()
+        self.change_pkg_input = QLineEdit(); self.change_pkg_input.setPlaceholderText('패키지명을 변경하려면 "Change package name" 패치 활성화 필요')
         self.update_perms = QCheckBox("Update permissions 적용")
         self.update_providers = QCheckBox("Update providers 적용")
         self.keystore_edit = QLineEdit()
