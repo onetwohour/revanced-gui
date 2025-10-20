@@ -1426,32 +1426,26 @@ class App(QWidget):
         if base_pkg == "com.kakao.talk":
             self._patches_to_check_on_load.append('Change package name')
             self._patches_to_check_on_load.append('Ignore Check Package Name')
-        elif base_pkg == "com.dcinside.app.android":
-            self._patches_to_check_on_load.append('Change package name')
-        QTimer.singleShot(0, self.on_list_patches)
-        try:
-            self.include_universal.setChecked(True)
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "exclusive"):
-                self.exclusive.setChecked(True)
-        except Exception:
-            pass
-        if hasattr(self, "update_perms"):
-            self.update_perms.setChecked(True)
-        if hasattr(self, "update_providers"):
-            self.update_providers.setChecked(True)
-        base_pkg = self.pkg_edit.text().strip() if hasattr(self, "pkg_edit") else ""
-        if not base_pkg:
-            apk_path = self.apk_edit.text().strip() if hasattr(self, "apk_edit") else ""
-            if apk_path and Path(apk_path).exists():
-                try:
-                    base_pkg = _try_extract_package_from_apk(Path(apk_path)) or ""
-                except Exception:
-                    base_pkg = ""
-        if base_pkg:
+            if hasattr(self, "update_perms"):
+                self.update_perms.setChecked(True)
+            if hasattr(self, "update_providers"):
+                self.update_providers.setChecked(True)
+            if hasattr(self, "include_universal"):
+                self.include_universal.setChecked(True)
             self.change_pkg_input.setText(base_pkg + ".revanced")
+        else:
+            if hasattr(self, "update_perms"):
+                self.update_perms.setChecked(False)
+            if hasattr(self, "update_providers"):
+                self.update_providers.setChecked(False)
+            if hasattr(self, "include_universal"):
+                self.include_universal.setChecked(False)
+            self.change_pkg_input.setText("")
+        # elif base_pkg == "com.dcinside.app.android":
+        #     self._patches_to_check_on_load.append('Change package name')
+        if hasattr(self, "exclusive"):
+            self.exclusive.setChecked(True)
+        QTimer.singleShot(0, self.on_list_patches)
         if hasattr(self, "log"):
             self.log.append(f"[PRESET] 프리셋 적용: pkg={base_pkg or '(미지정)'}")
 
