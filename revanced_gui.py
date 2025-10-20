@@ -899,13 +899,27 @@ class App(QWidget):
         dl_lay = QFormLayout()
         self.cli_url_edit = QLineEdit(); self.cli_url_edit.setPlaceholderText(CLI_RELEASE_URL)
         self.rvp_url_edit = QLineEdit(); self.rvp_url_edit.setPlaceholderText(PATCHES_RELEASE_URL)
-        self.cli_path_lbl = QLabel("CLI(.jar): 미다운로드")
-        self.rvp_path_lbl = QLabel("패치 번들(.rvp): 미다운로드")
         btn_dl = QPushButton("다운로드"); btn_dl.clicked.connect(self.on_download)
         dl_lay.addRow("CLI(.jar) URL", self.cli_url_edit)
         dl_lay.addRow("패치(.rvp) URL", self.rvp_url_edit)
-        dl_lay.addRow(self.cli_path_lbl)
-        dl_lay.addRow(self.rvp_path_lbl)
+        self.cli_path_lbl = QLabel("CLI: 미설정")
+        btn_pick_cli = QPushButton("파일 선택")
+        btn_pick_cli.clicked.connect(self.pick_cli_file)
+        cli_row_widget = QWidget() 
+        cli_row_layout = QHBoxLayout(cli_row_widget)
+        cli_row_layout.setContentsMargins(0, 0, 0, 0)
+        cli_row_layout.addWidget(self.cli_path_lbl, 1)
+        cli_row_layout.addWidget(btn_pick_cli)
+        dl_lay.addRow(cli_row_widget)
+        self.rvp_path_lbl = QLabel("패치 번들: 미설정")
+        btn_pick_rvp = QPushButton("파일 선택")
+        btn_pick_rvp.clicked.connect(self.pick_rvp_file)
+        rvp_row_widget = QWidget()
+        rvp_row_layout = QHBoxLayout(rvp_row_widget)
+        rvp_row_layout.setContentsMargins(0, 0, 0, 0)
+        rvp_row_layout.addWidget(self.rvp_path_lbl, 1)
+        rvp_row_layout.addWidget(btn_pick_rvp)
+        dl_lay.addRow(rvp_row_widget)
         dl_lay.addRow(btn_dl)
         dl_box.setLayout(dl_lay)
         setup_layout.addWidget(dl_box)
@@ -1097,6 +1111,7 @@ class App(QWidget):
                 self.list_widget.itemChanged.connect(self._update_dynamic_options)
                 self._update_dynamic_options()
                 self._pb_idle()
+                self.log.append(f"[OK] 패치 목록 불러오기 완료: {self.pkg_edit.text() or 'APK 미지정'}")
             elif t == "pkg":
                 val = m.get("value")
                 if val:
@@ -1259,6 +1274,24 @@ class App(QWidget):
         self.apk_edit.setText(path)
         self._pb_busy()
         self._qin.put({"cmd":"detect_package","apk":path})
+
+    def pick_cli_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "ReVanced CLI 선택", "", "Java Archive (*.jar)")
+        if not path: return
+        self.cli_jar = Path(path)
+        self.cli_path_lbl.setText(f"CLI: {self.cli_jar.name}")
+        self.log.append(f"[OK] CLI 파일 선택됨: {path}")
+        if self.cli_jar and self.rvp_file and self.pkg_edit.text():
+            QTimer.singleShot(0, self.on_list_patches)
+
+    def pick_rvp_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "ReVanced Patches 선택", "", "ReVanced Patches (*.rvp)")
+        if not path: return
+        self.rvp_file = Path(path)
+        self.rvp_path_lbl.setText(f"패치 번들: {self.rvp_file.name}")
+        self.log.append(f"[OK] RVP 파일 선택됨: {path}")
+        if self.cli_jar and self.rvp_file and self.pkg_edit.text():
+            QTimer.singleShot(0, self.on_list_patches)
 
     def pick_keystore(self):
         path, _ = QFileDialog.getOpenFileName(self, "Keystore 선택", "", "Keystore (*.jks *.keystore *.p12)")
