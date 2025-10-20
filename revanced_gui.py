@@ -1418,7 +1418,7 @@ class App(QWidget):
         self._qin.put({"cmd":"set_adb_path","path":path})
         in_apk = Path(apk_path)
         out_name = in_apk.stem + "-revanced.apk"
-        out_apk = (in_apk.parent / out_name)
+        out_apk = (self.out_dir / out_name)
         includes_by_idx: List[int] = []
         includes_by_name: List[str] = []
         index_to_option_keys: Dict[int, List[str]] = {}
