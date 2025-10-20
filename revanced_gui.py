@@ -704,7 +704,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 _win_set_not_content_indexed(tmp_path)
                 cmdline = msg.get("cmdline")
                 if not cmdline:
-                    cmdline = ["java","-jar",str(cli),"patch","-p",str(rvp)]
+                    cmdline = ["java","-jar",str(cli),"patch","-p",str(rvp),"--purge"]
                     if exclusive: cmdline.append("--exclusive")
                     for i in includes_by_idx: cmdline += ["--ei", str(i)]
                     for n in includes_by_name: cmdline += ["-e", n]
@@ -718,7 +718,6 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     cmdline += ["--temporary-files-path", str(tmp_path), "-o", str(out_apk), str(apk)]
                 out_q.put({"type":"build_begin"})
                 out_q.put({"type":"log","text":"[CMD] " + " ".join(f"\"{c}\"" if " " in c else c for c in cmdline)})
-                retry_tmp = None
                 try:
                     code = _run_stream_worker(cmdline, out_q)
                     if code == 0:
@@ -726,11 +725,8 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     else:
                         out_q.put({"type":"fail","error":f"패치 실패 code={code}"})
                 finally:
-                    ok1 = _safe_rmtree_force(tmp_path)
-                    ok2 = True
-                    if retry_tmp:
-                        ok2 = _safe_rmtree_force(retry_tmp)
-                    out_q.put({"type":"log","text":"[CLEAN] 임시폴더 삭제 완료" if (ok1 and ok2) else "[CLEAN] 일부 임시폴더는 재부팅 시 삭제 예약됨"})
+                    ok = _safe_rmtree_force(tmp_base) or (_safe_rmtree_force(tmp_path) and _safe_rmtree_force(tmp_base / "patched") and _safe_rmtree_force(tmp_base)) 
+                    out_q.put({"type":"log","text":"[CLEAN] 임시폴더 삭제 완료"})
                     out_q.put({"type":"build_end"})
                     out_q.put({"type":"done"})
             elif cmd == "adb_devices":
@@ -861,6 +857,7 @@ class App(QWidget):
         _ensure_dir(self.out_dir)
         self.cli_jar: Optional[Path] = None
         self.rvp_file: Optional[Path] = None
+        self._patches_to_check_on_load: List[str] = []
         self._qin: Queue = Queue()
         self._qout: Queue = Queue()
         self._worker = Process(target=worker_loop, args=(self._qin, self._qout,), daemon=True)
@@ -948,7 +945,7 @@ class App(QWidget):
         patch_file_btns = QHBoxLayout()
         self.btn_export = QPushButton("선택 내보내기"); self.btn_export.clicked.connect(self.export_selection)
         self.btn_import = QPushButton("선택 불러오기"); self.btn_import.clicked.connect(self.import_selection)
-        self.btn_preset_clone = QPushButton("프리셋"); self.btn_preset_clone.clicked.connect(self.apply_clone_preset)
+        self.btn_preset_clone = QPushButton("프리셋"); self.btn_preset_clone.clicked.connect(self.apply_preset)
         patch_file_btns.addWidget(self.btn_export); patch_file_btns.addWidget(self.btn_import); patch_file_btns.addWidget(self.btn_preset_clone)
         p_lay.addLayout(patch_opts_layout)
         p_lay.addWidget(self.btn_list); p_lay.addWidget(self.list_widget); p_lay.addWidget(self.btn_picker)
@@ -1112,6 +1109,14 @@ class App(QWidget):
                 self._update_dynamic_options()
                 self._pb_idle()
                 self.log.append(f"[OK] 패치 목록 불러오기 완료: {self.pkg_edit.text() or 'APK 미지정'}")
+                if getattr(self, "_patches_to_check_on_load", []):
+                    patches_to_check = set(self._patches_to_check_on_load)
+                    for i in range(self.list_widget.count()):
+                        item = self.list_widget.item(i)
+                        item_name = self._extract_item_name(item.text())
+                        if item_name in patches_to_check:
+                            item.setCheckState(Qt.Checked)
+                    self._patches_to_check_on_load = []
             elif t == "pkg":
                 val = m.get("value")
                 if val:
@@ -1405,10 +1410,24 @@ class App(QWidget):
         self._update_dynamic_options()
         self.log.append(f"[OK] 불러온 인덱스 {len(want)}개 중 {hit}개 적용")
 
-    def apply_clone_preset(self):
+    def apply_preset(self):
         if self.list_widget.count() == 0:
             QMessageBox.information(self, "안내", "먼저 ‘패치 목록 새로고침’을 실행해 주세요.")
             return
+        self._patches_to_check_on_load = []
+        base_pkg = self.pkg_edit.text().strip() if hasattr(self, "pkg_edit") else ""
+        if not base_pkg:
+            apk_path = self.apk_edit.text().strip() if hasattr(self, "apk_edit") else ""
+            if apk_path and Path(apk_path).exists():
+                try:
+                    base_pkg = _try_extract_package_from_apk(Path(apk_path)) or ""
+                except Exception:
+                    base_pkg = ""
+        if base_pkg == "com.kakao.talk":
+            self._patches_to_check_on_load.append('Change package name')
+            self._patches_to_check_on_load.append('Ignore Check Package Name')
+        elif base_pkg == "com.dcinside.app.android":
+            self._patches_to_check_on_load.append('Change package name')
         QTimer.singleShot(0, self.on_list_patches)
         try:
             self.include_universal.setChecked(True)
@@ -1537,7 +1556,7 @@ class App(QWidget):
                     all_options_values[original_key] = value
                 except IndexError:
                     pass
-        cmdline = ["java","-jar",str(self.cli_jar),"patch","-p",str(self.rvp_file)]
+        cmdline = ["java","-jar",str(self.cli_jar),"patch","-p",str(self.rvp_file),"--purge"]
         if self.exclusive.isChecked():
             cmdline.append("--exclusive")
         used_option_keys = set()
