@@ -1489,7 +1489,6 @@ class App(QWidget):
                 pkgs_map[name] = packages
                 if option_keys:
                     name_to_option_keys[name] = option_keys
-
         current_pkg = (self.pkg_edit.text() or "").strip().lower()
         include_universal_checked = self.include_universal.isChecked()
         for i in range(self.list_widget.count()):
@@ -1531,12 +1530,7 @@ class App(QWidget):
                         stripped_value = value.strip().strip('[]').strip()
                         value = f"[{stripped_value}]"
                 else:
-                    current_text = combo.currentText()
-                    match = re.match(r'^\s*([a-zA-Z0-9_-]+)', current_text)
-                    if match:
-                        value = match.group(1)
-                    else:
-                        value = current_text
+                    value = combo.currentText().split(' ')[0]
             elif isinstance(widget, QLineEdit):
                 value = widget.text().strip()
                 is_list = widget.property("is_list_type")
@@ -1544,12 +1538,7 @@ class App(QWidget):
                     stripped_value = value.strip().strip('[]').strip()
                     value = f"[{stripped_value}]"
             elif isinstance(widget, QComboBox):
-                current_text = widget.currentText()
-                match = re.match(r'^\s*([a-zA-Z0-9_-]+)', current_text)
-                if match:
-                    value = match.group(1)
-                else:
-                    value = current_text
+                value = widget.currentText().split(' ')[0]
             if value:
                 try:
                     original_key = widget_key.split('_', 1)[1]
