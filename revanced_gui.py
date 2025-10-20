@@ -760,6 +760,9 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 else:
                     out_q.put({"type":"fail","error":f"ADB 설치 실패 (code={code})\n{txt.strip()}"})
                 out_q.put({"type":"done"})
+            elif cmd == "adb_kill":
+                _adb_exec(["kill-server"])
+                out_q.put({"type":"done"})
             else:
                 out_q.put({"type":"fail","error":"unknown command"}); out_q.put({"type":"done"})
         except Exception as e:
@@ -1046,6 +1049,10 @@ class App(QWidget):
 
     def closeEvent(self, e):
         try:
+            self._qin.put({"cmd":"adb_kill"})
+        except Exception:
+            pass
+        try:
             self._qin.put(None)
         except Exception:
             pass
@@ -1308,7 +1315,6 @@ class App(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, title, "", filt)
         if path:
             self.adb_path_edit.setText(path)
-            self._qin.put({"cmd":"set_adb_path","path":path})
             self.on_adb_refresh()
 
     def on_download(self):
