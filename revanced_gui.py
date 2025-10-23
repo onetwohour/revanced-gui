@@ -126,16 +126,13 @@ def _ensure_adb_on_path_posix(extra_dirs: List[Path]):
 
 def _find_adb_in_tools() -> Optional[str]:
     root = Path.cwd() / "tools"
-    names = ["adb.exe", "adb"]
     if not root.exists():
         return None
+    names = ["adb.exe"] if _os_name() == "windows" else ["adb"]
     for name in names:
         for p in root.rglob(name):
-            try:
-                if p.exists() and p.is_file():
-                    return str(p)
-            except Exception:
-                continue
+            if p.is_file():
+                return str(p)
     return None
 
 def _run_capture(cmd, cwd=None, env=None) -> Tuple[int, str, str]:
@@ -638,17 +635,33 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 out_q.put({"type":"done"})
             elif cmd == "env_check":
                 ok, out, _ = _has_java_ok()
-                adb_ok = True
+                adb_ok = False
                 adb_path = None
-                if _ADB_OVERRIDE:
-                    adb_ok = Path(_ADB_OVERRIDE).exists()
-                    adb_path = _ADB_OVERRIDE if adb_ok else None
+                if _ADB_OVERRIDE and Path(_ADB_OVERRIDE).exists():
+                    adb_path = _ADB_OVERRIDE
+                    adb_ok = True
                 else:
-                    adb_path = _which("adb")
-                    adb_ok = (adb_path is not None)
+                    tools_adb = _find_adb_in_tools()
+                    if tools_adb and Path(tools_adb).exists():
+                        _ADB_OVERRIDE = tools_adb
+                        adb_path = tools_adb
+                        adb_ok = True
+                        try:
+                            _prepend_to_path(Path(tools_adb).parent)
+                        except Exception:
+                            pass
+                    else:
+                        if _os_name() == "windows":
+                            _refresh_windows_env_from_registry()
+                            _ensure_adb_on_path_windows()
+                        adb_path = _which("adb")
+                        adb_ok = adb_path is not None
                 out_q.put({"type":"env","java_ok":ok,"java_out":out,"git_ok":_has_git(),"adb_ok":adb_ok})
                 if adb_path:
-                    _emit_adb_path_set(out_q, adb_path, True)
+                    try:
+                        _emit_adb_path_set(out_q, adb_path, True)
+                    except NameError:
+                        out_q.put({"type":"adb_path_set","ok":True,"path":adb_path})
                 _adb_start_server(out_q)
                 devs, raw = _adb_list_devices()
                 out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
