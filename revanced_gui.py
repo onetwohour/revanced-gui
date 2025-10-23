@@ -1,4 +1,4 @@
-import os, sys, re, shutil, subprocess, platform, tempfile, time, ctypes, stat, queue, urllib.request
+import os, sys, re, shutil, subprocess, platform, tempfile, time, ctypes, stat, queue, urllib.request, zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
@@ -26,6 +26,9 @@ from PySide6.QtGui import QTextCursor, QFontDatabase, QFont, QGuiApplication
 
 CLI_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-cli/releases/latest'
 PATCHES_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-patches-releases/releases/latest'
+PLATFORM_TOOLS_WIN_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+PLATFORM_TOOLS_MAC_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+PLATFORM_TOOLS_LINUX_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
 
 _WIN_NO_WINDOW = 0
 if platform.system().lower() == "windows":
@@ -91,6 +94,9 @@ def _iter_windows_java_bins():
             continue
         for pat in sub_patterns:
             for p in root.glob(pat):
+                low = str(p).lower()
+                if "graalvm" in low or "mandrel" in low:
+                    continue
                 yield p
 
 def _iter_windows_git_bins():
@@ -110,6 +116,28 @@ def _prepend_to_path(p: Path):
     if s.lower() not in cur.lower():
         os.environ["PATH"] = s + (";" + cur if cur else "")
 
+def _ensure_adb_on_path_posix(extra_dirs: List[Path]):
+    cur = os.environ.get("PATH", "")
+    for d in extra_dirs:
+        if d.exists():
+            s = str(d)
+            if s not in cur:
+                os.environ["PATH"] = s + (":" + cur if cur else "")
+
+def _find_adb_in_tools() -> Optional[str]:
+    root = Path.cwd() / "tools"
+    names = ["adb.exe", "adb"]
+    if not root.exists():
+        return None
+    for name in names:
+        for p in root.rglob(name):
+            try:
+                if p.exists() and p.is_file():
+                    return str(p)
+            except Exception:
+                continue
+    return None
+
 def _run_capture(cmd, cwd=None, env=None) -> Tuple[int, str, str]:
     p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_WIN_NO_WINDOW)
     out_b, err_b = p.communicate()
@@ -122,6 +150,16 @@ def _run_stream_worker(cmd, out_q: Queue, cwd=None, env=None) -> int:
             break
         out_q.put({"type":"log","text":_safe_decode(raw).rstrip("\r\n")})
     return proc.wait()
+
+def _is_graalvm_runtime(info_text: str, java_path: Optional[str] = None) -> bool:
+    t = (info_text or "").lower()
+    if "graalvm" in t or "mandrel" in t:
+        return True
+    if java_path:
+        p = str(java_path).lower()
+        if "graalvm" in p or "mandrel" in p:
+            return True
+    return False
 
 def _has_java_ok() -> Tuple[bool, str, Optional[int]]:
     java_path = _which("java")
@@ -136,6 +174,8 @@ def _has_java_ok() -> Tuple[bool, str, Optional[int]]:
         return False, "java 미발견", None
     code, out, err = _run_capture([java_path, "-version"])
     text = (out or err or "").strip()
+    if _is_graalvm_runtime(text, java_path):
+        return False, text + "\n[GraalVM/ Mandrel 감지됨 → 오류 가능성 있음]", None
     m = re.search(r'\bversion "([^"]+)"', text)
     if not m:
         return False, text, None
@@ -163,6 +203,22 @@ def _has_git() -> bool:
     return False
 
 _ADB_OVERRIDE: Optional[str] = None
+_ADB_EMITTED_PATH: Optional[str] = None
+
+def _emit_adb_path_set(out_q: Queue, path: Optional[str], ok: bool = True):
+    global _ADB_EMITTED_PATH
+    if not path:
+        return
+    try:
+        newp = str(Path(path).resolve())
+        oldp = str(Path(_ADB_EMITTED_PATH).resolve()) if _ADB_EMITTED_PATH else None
+    except Exception:
+        newp = path
+        oldp = _ADB_EMITTED_PATH
+    if oldp and oldp == newp:
+        return
+    _ADB_EMITTED_PATH = newp
+    out_q.put({"type": "adb_path_set", "ok": ok, "path": path})
 
 def _ensure_adb_on_path_windows():
     if _os_name() != "windows":
@@ -178,10 +234,15 @@ def _ensure_adb_on_path_windows():
             _prepend_to_path(p)
 
 def _adb_exec(args: List[str], cwd=None) -> Tuple[int, str, str]:
+    global _ADB_OVERRIDE
     if _ADB_OVERRIDE:
         adb_path = _ADB_OVERRIDE
         if Path(adb_path).exists():
             return _run_capture([adb_path] + args, cwd=cwd)
+    local_tools_adb = _find_adb_in_tools()
+    if local_tools_adb and Path(local_tools_adb).exists():
+        _ADB_OVERRIDE = local_tools_adb
+        return _run_capture([local_tools_adb] + args, cwd=cwd)
     adb_path = _which("adb")
     if not adb_path and _os_name()=="windows":
         _refresh_windows_env_from_registry()
@@ -325,6 +386,26 @@ def _download_file(url: str, dest_path: Path, out_q: Queue, target_key: str):
                     out_q.put({"type":"log","text":f"[DL] {done} bytes"})
     out_q.put({"type":"log","text":f"[OK] {dest_path.name} → {dest_path}"})
 
+def _download_and_extract_zip(url: str, dest_dir: Path, out_q: Queue) -> Optional[Path]:
+    _ensure_dir(dest_dir)
+    tmp_zip = dest_dir / "tmp_download.zip"
+    _download_file(url, tmp_zip, out_q, target_key="adb-zip")
+    try:
+        with zipfile.ZipFile(tmp_zip, 'r') as z:
+            z.extractall(dest_dir)
+        out_q.put({"type":"log","text":f"[OK] ZIP 압축 해제 → {dest_dir}"})
+        return dest_dir
+    finally:
+        try: tmp_zip.unlink(missing_ok=True)
+        except Exception: pass
+
+def _make_executable(p: Path):
+    try:
+        mode = os.stat(p).st_mode
+        os.chmod(p, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except Exception:
+        pass
+
 def _get_latest_release(url: str):
     r = requests.get(url, timeout=30)
     r.raise_for_status()
@@ -368,7 +449,7 @@ def _parse_patches(text: str):
         patch_dict = {}
         main_info_text = blk
         options_text = None
-        options_match = re.search(r'(?m)^\s*Options:\s*$', blk) 
+        options_match = re.search(r'(?m)^\s*Options:\s*$', blk)
         if options_match:
             main_info_text = blk[:options_match.start()].strip()
             options_text = blk[options_match.end():].strip()
@@ -404,20 +485,17 @@ def _parse_patches(text: str):
                 m_key = re.search(r'(?m)^\s*Key:\s*(.+)', opt_block)
                 m_type = re.search(r'(?m)^\s*Type:\s*(.+)', opt_block)
                 m_default = re.search(r'(?m)^\s*Default:\s*([^\n\r]+)', opt_block)
-
                 if m_title: opt_dict['title'] = m_title.group(1).strip()
                 if m_opt_desc: opt_dict['description'] = m_opt_desc.group(1).strip()
                 if m_req: opt_dict['required'] = (m_req.group(1).strip().lower() == 'true')
                 if m_key: opt_dict['key'] = m_key.group(1).strip()
                 if m_type: opt_dict['type'] = m_type.group(1).strip()
                 if m_default: opt_dict['default'] = m_default.group(1).strip()
-
                 m_pv = re.search(r'(?ms)^\s*Possible values:\s*\n(.+?)(?=\n\s*(?:[A-Z][a-z]+:|\Z))', opt_block)
                 if m_pv:
                     pv_text = m_pv.group(1)
                     pv_list = [line.strip() for line in pv_text.splitlines() if line.strip()]
                     opt_dict['possible_values'] = pv_list
-                
                 if opt_dict:
                     patch_dict["options"].append(opt_dict)
         entries.append(patch_dict)
@@ -513,7 +591,10 @@ def _safe_rmtree_force(path: Path, max_retries: int = 10, wait_sec: float = 0.5)
             pass
         time.sleep(wait_sec)
     try:
+        tomb = path.parent*(path.name+".delete_pending_"+datetime.now().strftime("%Y%m%d%H%M%S"))
+    except Exception:
         tomb = path.parent/(path.name+".delete_pending_"+datetime.now().strftime("%Y%m%d%H%M%S"))
+    try:
         os.replace(str(path), str(tomb))
         path = tomb
     except Exception:
@@ -550,19 +631,24 @@ def worker_loop(in_q: Queue, out_q: Queue):
                 path = (msg.get("path") or "").strip()
                 if path and Path(path).exists():
                     _ADB_OVERRIDE = path
-                    out_q.put({"type":"adb_path_set","ok":True,"path":path})
+                    _emit_adb_path_set(out_q, path, True)
                 else:
                     _ADB_OVERRIDE = None if not path else path
-                    out_q.put({"type":"adb_path_set","ok":Path(path).exists(),"path":path})
+                    _emit_adb_path_set(out_q, path, Path(path).exists())
                 out_q.put({"type":"done"})
             elif cmd == "env_check":
                 ok, out, _ = _has_java_ok()
                 adb_ok = True
+                adb_path = None
                 if _ADB_OVERRIDE:
                     adb_ok = Path(_ADB_OVERRIDE).exists()
+                    adb_path = _ADB_OVERRIDE if adb_ok else None
                 else:
-                    adb_ok = (_which("adb") is not None)
+                    adb_path = _which("adb")
+                    adb_ok = (adb_path is not None)
                 out_q.put({"type":"env","java_ok":ok,"java_out":out,"git_ok":_has_git(),"adb_ok":adb_ok})
+                if adb_path:
+                    _emit_adb_path_set(out_q, adb_path, True)
                 _adb_start_server(out_q)
                 devs, raw = _adb_list_devices()
                 out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
@@ -625,6 +711,77 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         code = _run_stream_worker(c, out_q)
                         if code==0: ok=True; break
                     out_q.put({"type":"done"} if ok else {"type":"fail","error":"git 설치 실패"}); out_q.put({"type":"done"})
+            elif cmd == "install_adb":
+                ok = False
+                auto_path = None
+                try:
+                    existing_adb = None
+                    if _ADB_OVERRIDE and Path(_ADB_OVERRIDE).exists():
+                        existing_adb = _ADB_OVERRIDE
+                    else:
+                        found = _find_adb_in_tools()
+                        if found and Path(found).exists():
+                            existing_adb = found
+                        else:
+                            sys_adb = _which("adb")
+                            if sys_adb and Path(sys_adb).exists():
+                                existing_adb = sys_adb
+                    if existing_adb:
+                        out_q.put({"type":"log","text":f"[SKIP] ADB 이미 존재: {existing_adb}"})
+                        _ADB_OVERRIDE = existing_adb
+                        auto_path = existing_adb
+                        ok = True
+                    else:
+                        if _os_name() == "windows":
+                            base = Path.cwd() / "tools" / "platform-tools-win"
+                            extract_root = _download_and_extract_zip(PLATFORM_TOOLS_WIN_ZIP, base, out_q)
+                            if extract_root:
+                                p_adb = next((extract_root.glob("platform-tools/adb.exe")), None)
+                                if p_adb and p_adb.exists():
+                                    _prepend_to_path(p_adb.parent)
+                                    _ADB_OVERRIDE = str(p_adb)
+                                    auto_path = str(p_adb)
+                                    ok = True
+                                    out_q.put({"type":"log","text":f"[SET] ADB 경로 설정: {p_adb}"})
+                        elif _os_name() == "darwin":
+                            base = Path.cwd() / "tools" / "platform-tools-mac"
+                            extract_root = _download_and_extract_zip(PLATFORM_TOOLS_MAC_ZIP, base, out_q)
+                            if extract_root:
+                                p_adb = next((extract_root.glob("platform-tools/adb")), None)
+                                if p_adb and p_adb.exists():
+                                    _make_executable(p_adb)
+                                    _ensure_adb_on_path_posix([p_adb.parent])
+                                    _ADB_OVERRIDE = str(p_adb)
+                                    auto_path = str(p_adb)
+                                    ok = True
+                                    out_q.put({"type":"log","text":f"[SET] ADB 경로 설정: {p_adb}"})
+                        else:
+                            base = Path.cwd() / "tools" / "platform-tools-linux"
+                            extract_root = _download_and_extract_zip(PLATFORM_TOOLS_LINUX_ZIP, base, out_q)
+                            if extract_root:
+                                p_adb = next((extract_root.glob("platform-tools/adb")), None)
+                                if p_adb and p_adb.exists():
+                                    _make_executable(p_adb)
+                                    _ensure_adb_on_path_posix([p_adb.parent])
+                                    _ADB_OVERRIDE = str(p_adb)
+                                    auto_path = str(p_adb)
+                                    ok = True
+                                    out_q.put({"type":"log","text":f"[SET] ADB 경로 설정: {p_adb}"})
+                except Exception as e:
+                    out_q.put({"type":"fail","error":f"ADB 설치 중 예외: {e}"})
+                    out_q.put({"type":"done"})
+                    continue
+                if ok:
+                    if auto_path:
+                        _emit_adb_path_set(out_q, auto_path, True)
+                    _adb_start_server(out_q)
+                    devs, raw = _adb_list_devices()
+                    out_q.put({"type":"log","text":"[ADB] 설치 완료 및 서버 확인"})
+                    out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
+                    out_q.put({"type":"done"})
+                else:
+                    out_q.put({"type":"fail","error":"ADB 설치 실패"})
+                    out_q.put({"type":"done"})
             elif cmd == "download_components":
                 out_dir = Path(msg["out_dir"])
                 _ensure_dir(out_dir)
@@ -725,7 +882,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     else:
                         out_q.put({"type":"fail","error":f"패치 실패 code={code}"})
                 finally:
-                    ok = _safe_rmtree_force(tmp_base) or (_safe_rmtree_force(tmp_path) and _safe_rmtree_force(tmp_base / "patched") and _safe_rmtree_force(tmp_base)) 
+                    ok = _safe_rmtree_force(tmp_base) or (_safe_rmtree_force(tmp_path) and _safe_rmtree_force(tmp_base / "patched") and _safe_rmtree_force(tmp_base))
                     out_q.put({"type":"log","text":"[CLEAN] 임시폴더 삭제 완료"})
                     out_q.put({"type":"build_end"})
                     out_q.put({"type":"done"})
@@ -885,13 +1042,17 @@ class App(QWidget):
         env_box = QGroupBox("1. 환경 점검")
         env_form = QFormLayout()
         self.java_status = QLabel("Java: 미확인")
+        self.adb_status_env = QLabel("ADB: 미확인")
         # self.git_status = QLabel("Git: 미확인")
         btn_env_check = QPushButton("환경 점검"); btn_env_check.clicked.connect(self.on_env_check)
         btn_java = QPushButton("Java 설치"); btn_java.clicked.connect(self.on_java_install)
         # btn_git = QPushButton("Git 설치"); btn_git.clicked.connect(self.on_git_install)
+        btn_adb_env = QPushButton("ADB 설치")
+        btn_adb_env.clicked.connect(self.on_adb_install)
         env_form.addRow(self.java_status)
+        env_form.addRow(self.adb_status_env)
         # env_form.addRow(self.git_status)
-        h_btn_box = QHBoxLayout(); h_btn_box.addWidget(btn_env_check); h_btn_box.addWidget(btn_java);# h_btn_box.addWidget(btn_git)
+        h_btn_box = QHBoxLayout(); h_btn_box.addWidget(btn_env_check); h_btn_box.addWidget(btn_java); h_btn_box.addWidget(btn_adb_env);# h_btn_box.addWidget(btn_git)
         env_form.addRow(h_btn_box)
         env_box.setLayout(env_form)
         setup_layout.addWidget(env_box)
@@ -905,7 +1066,7 @@ class App(QWidget):
         self.cli_path_lbl = QLabel("CLI: 미설정")
         btn_pick_cli = QPushButton("파일 선택")
         btn_pick_cli.clicked.connect(self.pick_cli_file)
-        cli_row_widget = QWidget() 
+        cli_row_widget = QWidget()
         cli_row_layout = QHBoxLayout(cli_row_widget)
         cli_row_layout.setContentsMargins(0, 0, 0, 0)
         cli_row_layout.addWidget(self.cli_path_lbl, 1)
@@ -1003,6 +1164,8 @@ class App(QWidget):
         btn_adb_browse = QPushButton("찾기")
         btn_adb_browse.clicked.connect(self.pick_adb_path)
         adb_row = QHBoxLayout(); adb_row.addWidget(self.adb_path_edit); adb_row.addWidget(btn_adb_browse)
+        btn_adb_install = QPushButton("ADB 설치")
+        btn_adb_install.clicked.connect(self.on_adb_install)
         self.adb_install = QCheckBox("빌드 후 ADB 자동 설치")
         dev_row = QHBoxLayout()
         self.adb_device_edit = QLineEdit()
@@ -1013,6 +1176,7 @@ class App(QWidget):
         dev_row.addWidget(btn_adb_refresh)
         adb_form.addRow(self.adb_status)
         adb_form.addRow("ADB 경로 (직접 지정)", adb_row)
+        adb_form.addRow(btn_adb_install)
         adb_form.addRow(self.adb_install)
         adb_form.addRow("설치 대상 기기", dev_row)
         adb_box.setLayout(adb_form)
@@ -1086,7 +1250,11 @@ class App(QWidget):
                 java_ok = m.get("java_ok"); jline = (m.get("java_out","").splitlines()[0] if m.get("java_out") else "")
                 self.java_status.setText(f"Java: {'OK' if java_ok else '미설치/버전 불가'} ({jline})")
                 # self.git_status.setText(f"Git: {'OK' if m.get('git_ok') else '없음'}")
-                self.adb_status.setText(f"ADB: {'OK' if m.get('adb_ok') else '없음'}")
+                adb_ok = m.get("adb_ok")
+                if hasattr(self, "adb_status_env") and self.adb_status_env is not None:
+                    self.adb_status_env.setText(f"ADB: {'OK' if adb_ok else '없음'}")
+                if hasattr(self, "adb_status") and self.adb_status is not None:
+                    self.adb_status.setText(f"ADB: {'OK' if adb_ok else '없음'}")
                 self._pb_idle()
             elif t == "download_ok":
                 self.cli_jar = Path(m["cli"]); self.rvp_file = Path(m["rvp"])
@@ -1166,6 +1334,7 @@ class App(QWidget):
             elif t == "adb_path_set":
                 ok = m.get("ok"); p = m.get("path") or ""
                 if p:
+                    self.adb_path_edit.setText(p)
                     self.log.append(f"[SET] ADB 경로: {p} ({'확인' if ok else '미확인'})")
         if drained:
             self.log.moveCursor(QTextCursor.End)
@@ -1273,6 +1442,13 @@ class App(QWidget):
     def on_git_install(self):
         self._pb_busy()
         self._qin.put({"cmd":"install_git"})
+
+    def on_adb_install(self):
+        path = (self.adb_path_edit.text() or "").strip()
+        self._qin.put({"cmd":"set_adb_path","path":path})
+        self._pb_busy()
+        self.log.append("[RUN] ADB 설치 시작")
+        self._qin.put({"cmd":"install_adb"})
 
     def on_adb_refresh(self):
         path = (self.adb_path_edit.text() or "").strip()
