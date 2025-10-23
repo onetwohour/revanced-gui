@@ -1618,7 +1618,7 @@ class App(QWidget):
                     base_pkg = _try_extract_package_from_apk(Path(apk_path)) or ""
                 except Exception:
                     base_pkg = ""
-        if base_pkg == "com.kakao.talk":
+        if base_pkg == "com.kakao.talk" and False: # Risk of ban when cloning
             self._patches_to_check_on_load.append('Change package name')
             self._patches_to_check_on_load.append('Ignore Check Package Name')
             if hasattr(self, "update_perms"):
