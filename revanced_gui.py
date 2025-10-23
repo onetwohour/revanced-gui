@@ -713,8 +713,8 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         else: cmdline.append(f"-O{k}={v}")
                     if keystore: cmdline += ["--keystore", str(keystore)]
                     if ks_pass: cmdline += ["--keystore-password", ks_pass]
-                    if alias: cmdline += ["--key-alias", alias]
-                    if alias_pass: cmdline += ["--key-password", alias_pass]
+                    if alias: cmdline += ["--keystore-entry-alias", alias]
+                    if alias_pass: cmdline += ["--keystore-entry-password", alias_pass]
                     cmdline += ["--temporary-files-path", str(tmp_path), "-o", str(out_apk), str(apk)]
                 out_q.put({"type":"build_begin"})
                 out_q.put({"type":"log","text":"[CMD] " + " ".join(f"\"{c}\"" if " " in c else c for c in cmdline)})
@@ -1574,8 +1574,8 @@ class App(QWidget):
         alias_pass = self.alias_pass.text().strip()
         if keystore: cmdline += ["--keystore", str(keystore)]
         if ks_pass: cmdline += ["--keystore-password", ks_pass]
-        if alias: cmdline += ["--key-alias", alias]
-        if alias_pass: cmdline += ["--key-password", alias_pass]
+        if alias: cmdline += ["--keystore-entry-alias", alias]
+        if alias_pass: cmdline += ["--keystore-entry-password", alias_pass]
         tmp_base = self.tmp_dir_edit.text().strip()
         if not tmp_base:
             tmp_base = str(self.out_dir / "work")
