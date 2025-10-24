@@ -587,10 +587,7 @@ def _safe_rmtree_force(path: Path, max_retries: int = 10, wait_sec: float = 0.5)
         except Exception:
             pass
         time.sleep(wait_sec)
-    try:
-        tomb = path.parent*(path.name+".delete_pending_"+datetime.now().strftime("%Y%m%d%H%M%S"))
-    except Exception:
-        tomb = path.parent/(path.name+".delete_pending_"+datetime.now().strftime("%Y%m%d%H%M%S"))
+    tomb = path.parent/(path.name+".delete_pending_"+datetime.now().strftime("%Y%m%d%H%M%S"))
     try:
         os.replace(str(path), str(tomb))
         path = tomb
@@ -895,8 +892,10 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     else:
                         out_q.put({"type":"fail","error":f"패치 실패 code={code}"})
                 finally:
-                    ok = _safe_rmtree_force(tmp_base) or (_safe_rmtree_force(tmp_path) and _safe_rmtree_force(tmp_base / "patched") and _safe_rmtree_force(tmp_base))
-                    out_q.put({"type":"log","text":"[CLEAN] 임시폴더 삭제 완료"})
+                    try:
+                        _safe_rmtree_force(tmp_base)
+                    finally:
+                        out_q.put({"type":"log","text":"[CLEAN] 임시파일 정리 완료"})
                     out_q.put({"type":"build_end"})
                     out_q.put({"type":"done"})
             elif cmd == "adb_devices":
