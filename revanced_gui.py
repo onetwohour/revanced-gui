@@ -1473,6 +1473,7 @@ class App(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "APK 선택", "", "APK (*.apk)")
         if not path: return
         self.apk_edit.setText(path)
+        self.change_pkg_input.setPlaceholderText('패키지명을 변경하려면 "Change package name" 패치 활성화 필요')
         self._pb_busy()
         self._qin.put({"cmd":"detect_package","apk":path})
 
@@ -1618,7 +1619,7 @@ class App(QWidget):
                     base_pkg = _try_extract_package_from_apk(Path(apk_path)) or ""
                 except Exception:
                     base_pkg = ""
-        if base_pkg == "com.kakao.talk" and False: # Risk of ban when cloning
+        if False and base_pkg == "com.kakao.talk": # Risk of ban when cloning
             self._patches_to_check_on_load.append('Change package name')
             self._patches_to_check_on_load.append('Ignore Check Package Name')
             if hasattr(self, "update_perms"):
@@ -1636,8 +1637,7 @@ class App(QWidget):
             if hasattr(self, "include_universal"):
                 self.include_universal.setChecked(False)
             self.change_pkg_input.setText("")
-        # elif base_pkg == "com.dcinside.app.android":
-        #     self._patches_to_check_on_load.append('Change package name')
+            self.change_pkg_input.setPlaceholderText(f'e.g. {base_pkg + ".revanced"}')
         if hasattr(self, "exclusive"):
             self.exclusive.setChecked(True)
         QTimer.singleShot(0, self.on_list_patches)
