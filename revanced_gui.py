@@ -365,23 +365,44 @@ def _find_temurin_msi_url(out_q: Queue) -> Optional[str]:
                     return link2
     return None
 
-def _download_file(url: str, dest_path: Path, out_q: Queue, target_key: str):
+def _download_file(url: str, dest_path: Path, out_q: Queue, target_key: str, retries: int=3):
     _ensure_dir(dest_path.parent)
-    with requests.get(url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        total = int(r.headers.get('Content-Length', 0))
-        done = 0
-        with open(dest_path, 'wb') as f:
-            for chunk in r.iter_content(1024*64):
-                if not chunk:
-                    continue
-                f.write(chunk); done += len(chunk)
-                if total:
-                    pct = int(done * 100 / total)
-                    out_q.put({"type":"progress","phase":"download","target":target_key,"value":pct,"done":done,"total":total})
-                else:
-                    out_q.put({"type":"log","text":f"[DL] {done} bytes"})
-    out_q.put({"type":"log","text":f"[OK] {dest_path.name} → {dest_path}"})
+    for attempt in range(1, retries+1):
+        try:
+            with requests.get(url, stream=True, timeout=(5, 60)) as r:
+                r.raise_for_status()
+                total = int(r.headers.get('Content-Length', 0))
+                done = 0
+                with open(dest_path, 'wb') as f:
+                    for chunk in r.iter_content(1024*64):
+                        if not chunk:
+                            continue
+                        f.write(chunk); done += len(chunk)
+                        if total:
+                            pct = int(done * 100 / total)
+                            out_q.put({"type":"progress","phase":"download","target":target_key,"value":pct,"done":done,"total":total})
+                        else:
+                            if done % (1024*1024) == 0:
+                                out_q.put({"type":"log","text":f"[DL] {done} bytes"})
+            out_q.put({"type":"log","text":f"[OK] {dest_path.name} → {dest_path}"})
+            return
+        except Exception as e:
+            out_q.put({"type":"log","text":f"[DL RETRY {attempt}/{retries}] {e}"})
+            time.sleep(1.0 * attempt)
+    out_q.put({"type":"log","text":"[DL] 다운로드 실패"})
+
+def _safe_extractall(zf: zipfile.ZipFile, dest_dir: Path):
+    dest_dir = dest_dir.resolve()
+    for member in zf.infolist():
+        out_path = (dest_dir / member.filename).resolve()
+        if not str(out_path).startswith(str(dest_dir)):
+            raise RuntimeError(f"Zip entry escapes target dir: {member.filename}")
+        if member.is_dir():
+            out_path.mkdir(parents=True, exist_ok=True)
+        else:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member, 'r') as src, open(out_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
 
 def _download_and_extract_zip(url: str, dest_dir: Path, out_q: Queue) -> Optional[Path]:
     _ensure_dir(dest_dir)
@@ -389,7 +410,7 @@ def _download_and_extract_zip(url: str, dest_dir: Path, out_q: Queue) -> Optiona
     _download_file(url, tmp_zip, out_q, target_key="adb-zip")
     try:
         with zipfile.ZipFile(tmp_zip, 'r') as z:
-            z.extractall(dest_dir)
+            _safe_extractall(z, dest_dir)
         out_q.put({"type":"log","text":f"[OK] ZIP 압축 해제 → {dest_dir}"})
         return dest_dir
     finally:
@@ -410,33 +431,49 @@ def _get_latest_release(url: str):
     return data.get('tag_name') or '', data.get('assets') or []
 
 def _asset_download_url(asset: dict) -> str:
-    return asset.get('browser_download_url') or asset.get('url') or ''
+    for k in ("browser_download_url", "browser_url", "html_url", "url"):
+        v = asset.get(k)
+        if v and isinstance(v, str) and v.startswith(("http://", "https://")):
+            return v
+    return ""
 
 def _pick_cli_jar_download_url(assets):
     jar_assets = [a for a in assets if str(a.get('name','')).lower().endswith('.jar')]
     cli_jars = [a for a in jar_assets if 'cli' in str(a.get('name','')).lower()]
-    chosen = (cli_jars or jar_assets or [None])[0]
-    if not chosen:
-        return None, None
-    url = _asset_download_url(chosen)
-    name = chosen.get('name') or os.path.basename(url) or 'revanced-cli.jar'
-    return (url, name) if url else (None, None)
+    for cand in (cli_jars or jar_assets):
+        url = _asset_download_url(cand)
+        if url:
+            name = cand.get('name') or os.path.basename(url.split("?")[0]) or 'revanced-cli.jar'
+            return url, name
+    return None, None
 
 def _pick_patches_rvp_download_url(assets):
     rvp_assets = [a for a in assets if str(a.get('name','')).lower().endswith('.rvp')]
-    if not rvp_assets:
-        return None, None
-    preferred = [a for a in rvp_assets if 'patch' in str(a.get('name','')).lower()]
-    chosen = (preferred or rvp_assets)[0]
-    url = _asset_download_url(chosen)
-    name = chosen.get('name') or os.path.basename(url) or 'patches.rvp'
-    return (url, name) if url else (None, None)
+    for cand in rvp_assets:
+        url = _asset_download_url(cand)
+        if url:
+            name = cand.get('name') or os.path.basename(url.split("?")[0]) or 'patches.rvp'
+            return url, name
+    return None, None
 
 def _run_cli_list_patches(cli_jar: Path, rvp_path: Path) -> str:
     code, out, err = _run_capture(["java","-jar",str(cli_jar),"list-patches","--with-packages","--with-versions","--with-options",str(rvp_path)])
     if code != 0:
         raise RuntimeError(f"list-patches 실패\n{err or out}")
     return out
+
+def _clear_form_layout(form_layout: QFormLayout):
+    while form_layout.count():
+        item = form_layout.takeAt(0)
+        w = item.widget()
+        l = item.layout()
+        if w:
+            w.deleteLater()
+        if l:
+            while l.count():
+                ci = l.takeAt(0)
+                if ci.widget():
+                    ci.widget().deleteLater()
 
 def _parse_patches(text: str):
     entries = []
@@ -624,8 +661,9 @@ def worker_loop(in_q: Queue, out_q: Queue):
             if cmd == "set_adb_path":
                 path = (msg.get("path") or "").strip()
                 if path and Path(path).exists():
-                    _ADB_OVERRIDE = path
-                    _emit_adb_path_set(out_q, path, True)
+                    code, _, _ = _run_capture([path, "version"])
+                    _ADB_OVERRIDE = path if code == 0 else None
+                    _emit_adb_path_set(out_q, path, ok=(code==0))
                 else:
                     _ADB_OVERRIDE = None if not path else path
                     _emit_adb_path_set(out_q, path, Path(path).exists())
@@ -690,7 +728,11 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         out_q.put({"type":"fail","error":f"msiexec code={code}"}); out_q.put({"type":"done"})
                 elif _os_name()=="darwin" and _which("brew"):
                     code = _run_stream_worker(["brew","install","--cask","temurin17"], out_q)
-                    out_q.put({"type":"done"} if code==0 else {"type":"fail","error":f"brew code={code}"}); out_q.put({"type":"done"})
+                    if code == 0:
+                        out_q.put({"type":"done"})
+                    else:
+                        out_q.put({"type":"fail","error":f"brew code={code}"})
+                        out_q.put({"type":"done"})
                 else:
                     pkg_cmds = [
                         ["bash","-lc","sudo apt-get update && sudo apt-get install -y openjdk-17-jdk"],
@@ -702,7 +744,11 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         if _which(c[0]) or c[0]=="bash":
                             code = _run_stream_worker(c, out_q)
                             if code==0: ok=True; break
-                    out_q.put({"type":"done"} if ok else {"type":"fail","error":"java 설치 실패"}); out_q.put({"type":"done"})
+                    if ok:
+                        out_q.put({"type":"done"})
+                    else:
+                        out_q.put({"type":"fail","error":"java 설치 실패"})
+                        out_q.put({"type":"done"})
             elif cmd == "install_git":
                 if _os_name()=="windows" and _which("winget"):
                     code = _run_stream_worker(["winget","install","--id","Git.Git","-e","--silent","--accept-package-agreements","--accept-source-agreements","--disable-interactivity","--source","winget"], out_q)
@@ -714,13 +760,21 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         out_q.put({"type":"fail","error":f"winget git code={code}"}); out_q.put({"type":"done"})
                 elif _os_name()=="darwin" and _which("brew"):
                     code = _run_stream_worker(["brew","install","git"], out_q)
-                    out_q.put({"type":"done"} if code==0 else {"type":"fail","error":"brew git 실패"}); out_q.put({"type":"done"})
+                    if code == 0:
+                        out_q.put({"type":"done"})
+                    else:
+                        out_q.put({"type":"fail","error":"brew git 실패"})
+                        out_q.put({"type":"done"})
                 else:
                     ok=False
                     for c in (["bash","-lc","sudo apt-get update && sudo apt-get install -y git"],["bash","-lc","sudo dnf install -y git"],["bash","-lc","sudo pacman -S --noconfirm git"]):
                         code = _run_stream_worker(c, out_q)
                         if code==0: ok=True; break
-                    out_q.put({"type":"done"} if ok else {"type":"fail","error":"git 설치 실패"}); out_q.put({"type":"done"})
+                    if ok:
+                        out_q.put({"type":"done"})
+                    else:
+                        out_q.put({"type":"fail","error":"git 설치 실패"})
+                        out_q.put({"type":"done"})
             elif cmd == "install_adb":
                 ok = False
                 auto_path = None
@@ -923,7 +977,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     continue
                 code, out, err = _adb_install(apk_path, serial, out_q)
                 txt = (out + err)
-                if code==0 and ("Success" in txt or "Success" in (out or "")):
+                if code == 0 and ("success" in txt.lower()):
                     out_q.put({"type":"log","text":"[ADB] 설치 성공"})
                     out_q.put({"type":"adb_install_ok","apk":str(apk_path),"serial":serial or (devs[0]["serial"] if devs else "")})
                 else:
@@ -1353,10 +1407,7 @@ class App(QWidget):
             self.log.ensureCursorVisible()
 
     def _update_dynamic_options(self, item: Optional[QListWidgetItem] = None):
-        while self.dynamic_options_layout.count():
-            child = self.dynamic_options_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        _clear_form_layout(self.dynamic_options_layout)
         self.dynamic_option_widgets.clear()
         selected_patch_indices = set()
         for i in range(self.list_widget.count()):
@@ -1704,6 +1755,17 @@ class App(QWidget):
             all_options_values["updatePermissions"] = "true"
         if self.update_providers.isChecked():
             all_options_values["updateProviders"] = "true"
+        if chpkg:
+            change_pkg_enabled = False
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if item.checkState() == Qt.Checked:
+                    nm = self._extract_item_name(item.text()).strip().lower()
+                    if nm == "change package name":
+                        change_pkg_enabled = True
+                        break
+            if not change_pkg_enabled:
+                self.log.append("[WARN] 패키지 이름을 지정했지만 'Change package name' 패치를 적용하지 않음")
         for widget_key, widget in self.dynamic_option_widgets.items():
             value = ""
             is_composite = widget.property("is_composite")
