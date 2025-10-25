@@ -54,6 +54,17 @@ def _os_name():
 def _ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+def _dir_is_empty(p: Path) -> bool:
+    if not p.exists():
+        return True
+    if not p.is_dir():
+        return False
+    try:
+        next(p.iterdir())
+        return False
+    except StopIteration:
+        return True
+
 def _refresh_windows_env_from_registry():
     if _os_name() != "windows":
         return
@@ -1199,10 +1210,7 @@ class App(QWidget):
         self.alias_pass = QLineEdit(); self.alias_pass.setEchoMode(QLineEdit.Password)
         self.tmp_dir_edit = QLineEdit(); self.tmp_dir_edit.setPlaceholderText(r"비워두면 output/work 폴더 사용")
         btn_tmp = QPushButton("임시폴더 선택")
-        def _pick_tmp():
-            path = QFileDialog.getExistingDirectory(self, "임시폴더 선택", "")
-            if path: self.tmp_dir_edit.setText(path)
-        btn_tmp.clicked.connect(_pick_tmp)
+        btn_tmp.clicked.connect(self.pick_tmp_dir)
         tmp_row = QHBoxLayout(); tmp_row.addWidget(self.tmp_dir_edit); tmp_row.addWidget(btn_tmp)
         opt.addRow("임시파일 경로", tmp_row)
         opt.addRow("패키지명 변경", self.change_pkg_input)
@@ -1699,6 +1707,38 @@ class App(QWidget):
         if hasattr(self, "log"):
             self.log.append(f"[PRESET] 프리셋 적용: pkg={base_pkg or '(미지정)'}")
 
+    def pick_tmp_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "임시폴더 선택", "")
+        if not path:
+            return
+        p_tmp = Path(path).resolve()
+        root_dir = Path.cwd().resolve()
+        out_dir  = self.out_dir.resolve()
+        if p_tmp.exists() and not p_tmp.is_dir():
+            QMessageBox.warning(self, "잘못된 경로", f"선택한 경로가 폴더가 아닙니다.\n\n경로: {p_tmp}")
+            return
+        if p_tmp.exists() and not _dir_is_empty(p_tmp):
+            QMessageBox.warning(
+                self,
+                "비어 있지 않은 폴더",
+                f"선택한 폴더가 비어 있지 않습니다.\n\n"
+                f"경로: {p_tmp}\n\n"
+                "빌드용 임시 폴더는 반드시 비어 있거나 새 폴더여야 합니다."
+            )
+            return
+        if p_tmp == root_dir or p_tmp == out_dir:
+            QMessageBox.warning(
+                self, "임시폴더 제한",
+                f"프로젝트 루트/산출물 폴더는 임시폴더로 사용할 수 없습니다.\n\n경로: {p_tmp}"
+            )
+            return
+        try:
+            p_tmp.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.warning(self, "폴더 생성 실패", f"폴더를 만들 수 없습니다.\n\n경로: {p_tmp}\n에러: {e}")
+            return
+        self.tmp_dir_edit.setText(str(p_tmp))
+
     def on_build(self):
         if not self.cli_jar or not self.cli_jar.exists():
             QMessageBox.information(self, "안내", "CLI .jar를 먼저 다운로드하세요.")
@@ -1834,8 +1874,33 @@ class App(QWidget):
         tmp_base = self.tmp_dir_edit.text().strip()
         if not tmp_base:
             tmp_base = str(self.out_dir / "work")
-        _ensure_dir(Path(tmp_base))
-        cmdline += ["--temporary-files-path", str(Path(tmp_base)), "-o", str(out_apk), str(in_apk)]
+        p_tmp = Path(tmp_base).resolve()
+        if p_tmp.exists() and not p_tmp.is_dir():
+            QMessageBox.warning(self, "임시폴더 오류", f"임시파일 경로가 폴더가 아닙니다.\n\n경로: {p_tmp}")
+            return
+        if p_tmp.exists() and not _dir_is_empty(p_tmp):
+            QMessageBox.warning(
+                self,
+                "임시폴더 비우기 필요",
+                f"임시파일 경로가 비어 있지 않습니다.\n\n경로: {p_tmp}\n\n"
+                "폴더를 비우시거나 다른 경로를 지정해 주세요."
+            )
+            return
+        root_dir = Path.cwd().resolve()
+        out_dir  = self.out_dir.resolve()
+        if p_tmp == root_dir or p_tmp == out_dir:
+            QMessageBox.warning(
+                self, "임시폴더 제한",
+                f"프로젝트 루트/산출물 폴더는 임시폴더로 사용할 수 없습니다.\n\n경로: {p_tmp}"
+            )
+            return
+        if not p_tmp.exists():
+            try:
+                p_tmp.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "임시폴더 생성 실패", f"경로를 만들 수 없습니다.\n\n경로: {p_tmp}\n에러: {e}")
+                return
+        cmdline += ["--temporary-files-path", str(p_tmp), "-o", str(out_apk), str(in_apk)]
         self._pb_busy()
         self._qin.put({
             "cmd":"build",
@@ -1852,7 +1917,7 @@ class App(QWidget):
             "ks_pass":ks_pass if ks_pass else "",
             "alias":alias if alias else "",
             "alias_pass":alias_pass if alias_pass else "",
-            "tmp_base":tmp_base,
+            "tmp_base":str(p_tmp),
             "adb_install":self.adb_install.isChecked(),
         })
         self.log.append("[RUN] 빌드 시작")
