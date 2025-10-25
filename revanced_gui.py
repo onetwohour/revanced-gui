@@ -276,7 +276,6 @@ def _adb_start_server(out_q: Optional[Queue]=None) -> bool:
         return True
     devs, _ = _adb_list_devices()
     ok = len(devs) > 0
-    if out_q: out_q.put({"type":"log","text":f"[ADB] devices={len(devs)}"})
     return ok
 
 def _adb_list_devices() -> Tuple[List[Dict[str,str]], str]:
@@ -711,6 +710,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     ok_now, _, _ = _has_java_ok()
                     if ok_by_winget or ok_now:
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                         continue
                     out_q.put({"type":"log","text":"winget로 Java 감지 실패 → MSI 시도"})
                 if _os_name()=="windows":
@@ -724,12 +724,14 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         _refresh_windows_env_from_registry()
                         for p in _iter_windows_java_bins(): _prepend_to_path(p.parent)
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":f"msiexec code={code}"}); out_q.put({"type":"done"})
                 elif _os_name()=="darwin" and _which("brew"):
                     code = _run_stream_worker(["brew","install","--cask","temurin17"], out_q)
                     if code == 0:
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":f"brew code={code}"})
                         out_q.put({"type":"done"})
@@ -746,6 +748,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                             if code==0: ok=True; break
                     if ok:
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":"java 설치 실패"})
                         out_q.put({"type":"done"})
@@ -756,12 +759,14 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         _refresh_windows_env_from_registry()
                         for p in _iter_windows_git_bins(): _prepend_to_path(p.parent)
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":f"winget git code={code}"}); out_q.put({"type":"done"})
                 elif _os_name()=="darwin" and _which("brew"):
                     code = _run_stream_worker(["brew","install","git"], out_q)
                     if code == 0:
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":"brew git 실패"})
                         out_q.put({"type":"done"})
@@ -772,6 +777,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         if code==0: ok=True; break
                     if ok:
                         out_q.put({"type":"done"})
+                        in_q.put({"cmd":"env_check"})
                     else:
                         out_q.put({"type":"fail","error":"git 설치 실패"})
                         out_q.put({"type":"done"})
@@ -839,10 +845,8 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     if auto_path:
                         _emit_adb_path_set(out_q, auto_path, True)
                     _adb_start_server(out_q)
-                    devs, raw = _adb_list_devices()
                     out_q.put({"type":"log","text":"[ADB] 설치 완료 및 서버 확인"})
-                    out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
-                    out_q.put({"type":"done"})
+                    in_q.put({"cmd":"env_check"})
                 else:
                     out_q.put({"type":"fail","error":"ADB 설치 실패"})
                     out_q.put({"type":"done"})
@@ -1232,16 +1236,16 @@ class App(QWidget):
         adb_row = QHBoxLayout(); adb_row.addWidget(self.adb_path_edit); adb_row.addWidget(btn_adb_browse)
         btn_adb_install = QPushButton("ADB 설치")
         btn_adb_install.clicked.connect(self.on_adb_install)
-        self.adb_install = QCheckBox("빌드 후 ADB 자동 설치")
+        self.adb_install = QCheckBox("빌드 후 ADB로 자동 설치")
         dev_row = QHBoxLayout()
         self.adb_device_edit = QLineEdit()
-        self.adb_device_edit.setPlaceholderText("자동 감지 또는 직접 입력 (시리얼)")
+        self.adb_device_edit.setPlaceholderText("자동 감지 또는 직접 입력")
         btn_adb_refresh = QPushButton("ADB 기기 새로고침")
         btn_adb_refresh.clicked.connect(self.on_adb_refresh)
         dev_row.addWidget(self.adb_device_edit)
         dev_row.addWidget(btn_adb_refresh)
         adb_form.addRow(self.adb_status)
-        adb_form.addRow("ADB 경로 (직접 지정)", adb_row)
+        adb_form.addRow("ADB 경로", adb_row)
         adb_form.addRow(btn_adb_install)
         adb_form.addRow(self.adb_install)
         adb_form.addRow("설치 대상 기기", dev_row)
@@ -1687,7 +1691,8 @@ class App(QWidget):
             if hasattr(self, "include_universal"):
                 self.include_universal.setChecked(False)
             self.change_pkg_input.setText("")
-            self.change_pkg_input.setPlaceholderText(f'e.g. {base_pkg + ".revanced"}')
+            if base_pkg: self.change_pkg_input.setPlaceholderText(f'e.g. {base_pkg + ".revanced"}')
+            else: self.change_pkg_input.setPlaceholderText('패키지명을 변경하려면 "Change package name" 패치 활성화 필요')
         if hasattr(self, "exclusive"):
             self.exclusive.setChecked(True)
         QTimer.singleShot(0, self.on_list_patches)
