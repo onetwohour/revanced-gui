@@ -1,6 +1,6 @@
 ## ReVanced GUI
 
-**ReVanced GUI**는 ReVanced CLI 및 Patches를 기반으로, 명령줄(CLI) 없이 안드로이드 APK 파일의 패치를 시각적으로 구성하고 빌드할 수 있게 도와주는 데스크톱 프로그램입니다.
+**ReVanced GUI**는 ReVanced CLI 및 Patches를 기반으로, 명령줄(CLI) 없이 안드로이드 APK 파일의 패치를 시각적으로 구성하고 빌드할 수 있게 도와주는 비공식 데스크톱 프로그램입니다.
 
 ![Screenshot](/imgs/001.webp)
 ![Screenshot](/imgs/002.webp)
@@ -88,7 +88,7 @@ python revanced_gui.py
 ```
 
 > **⚠️ 중요 공지**<br>
-> (소스 코드로 실행 시) 프로그램 경로에 **한글이나 공백이 포함되면** 빌드 중 예기치 않은 오류가 발생할 수 있습니다. `C:\revanced-gui`와 같이 간단하고 영문으로만 구성된 경로에서 실행하는 것을 강력히 권장합니다.
+> 프로그램 경로에 **한글이나 공백이 포함되면** 빌드 중 예기치 않은 오류가 발생할 수 있습니다. `C:\revanced-gui`와 같이 간단하고 영문으로만 구성된 경로에서 실행하는 것을 강력히 권장합니다.
 
 -----
 
