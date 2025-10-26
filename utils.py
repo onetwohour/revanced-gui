@@ -199,7 +199,7 @@ def _has_adb_ok() -> str:
         _refresh_windows_env_from_registry()
         _ensure_adb_on_path_windows()
         adb_path = _which("adb")
-    return adb_path
+    return adb_path or _find_adb_in_tools()
 
 def _ensure_adb_on_path_windows():
     if _os_name() != "windows":
