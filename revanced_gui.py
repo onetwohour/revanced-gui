@@ -1232,6 +1232,7 @@ class App(QWidget):
         p_lay = QVBoxLayout()
         patch_opts_layout = QHBoxLayout()
         self.include_universal = QCheckBox("유니버설 패치 포함")
+        self.include_universal.checkStateChanged.connect(lambda: self.on_list_patches() if self.cli_jar and self.rvp_file else None)
         self.exclusive = QCheckBox("선택한 패치만 적용 (권장)"); self.exclusive.setChecked(True)
         patch_opts_layout.addWidget(self.include_universal); patch_opts_layout.addWidget(self.exclusive)
         self.btn_list = QPushButton("패치 목록 새로고침"); self.btn_list.clicked.connect(self.on_list_patches)
@@ -1325,6 +1326,9 @@ class App(QWidget):
         split.setStretchFactor(0,0); split.setStretchFactor(1,1); split.setSizes([720,900])
         root.addWidget(split)
         self.entries = []
+        self._keep_idx = set()
+        self._keep_name = set()
+        self.reset_select = True
         self.dynamic_option_widgets: Dict[str, QWidget] = {}
         self.list_widget.itemChanged.connect(self._update_dynamic_options)
         QTimer.singleShot(0, self.on_env_check)
@@ -1392,7 +1396,9 @@ class App(QWidget):
                 self._pb_idle()
                 if getattr(self, "_auto_list_after_download", False):
                     self._auto_list_after_download = False
-                    if self.pkg_edit.text(): QTimer.singleShot(0, self.on_list_patches)
+                    if self.pkg_edit.text():
+                        self.reset_select = True
+                        QTimer.singleShot(0, self.on_list_patches)
             elif t == "patches":
                 self.entries = m.get("entries",[])
                 try:
@@ -1407,8 +1413,13 @@ class App(QWidget):
                     if pkgs:
                         label += f"  ({', '.join(pkgs)})"
                     item = QListWidgetItem(label)
-                    item.setCheckState(Qt.Checked if e.get("enabled") else Qt.Unchecked)
+                    if self.reset_select:
+                        keep = bool(e.get("enabled"))
+                    else:
+                        keep = (e.get('index') in self._keep_idx) or (e.get('name') in self._keep_name)
+                    item.setCheckState(Qt.Checked if keep else Qt.Unchecked)
                     self.list_widget.addItem(item)
+                self.reset_select = False
                 self.list_widget.itemChanged.connect(self._update_dynamic_options)
                 self._update_dynamic_options()
                 self._pb_idle()
@@ -1468,6 +1479,19 @@ class App(QWidget):
         if drained:
             self.log.moveCursor(QTextCursor.End)
             self.log.ensureCursorVisible()
+    
+    def _remember_selection(self):
+        self._keep_idx.clear()
+        self._keep_name.clear()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                m = re.match(r'^\[(\d+)\]\s+(.*)$', item.text())
+                if m and m.group(1).isdigit():
+                    self._keep_idx.add(int(m.group(1)))
+                    self._keep_name.add(self._extract_item_name(item.text()))
+                else:
+                    self._keep_name.add(self._extract_item_name(item.text()))
 
     def _update_dynamic_options(self, item: Optional[QListWidgetItem] = None):
         _clear_form_layout(self.dynamic_options_layout)
@@ -1597,6 +1621,7 @@ class App(QWidget):
         self.cli_path_lbl.setText(f"CLI: {self.cli_jar.name}")
         self.log.append(f"[OK] CLI 파일 선택됨: {path}")
         if self.cli_jar and self.rvp_file and self.pkg_edit.text():
+            self.reset_select = True
             QTimer.singleShot(0, self.on_list_patches)
 
     def pick_rvp_file(self):
@@ -1606,6 +1631,7 @@ class App(QWidget):
         self.rvp_path_lbl.setText(f"패치 번들: {self.rvp_file.name}")
         self.log.append(f"[OK] RVP 파일 선택됨: {path}")
         if self.cli_jar and self.rvp_file and self.pkg_edit.text():
+            self.reset_select = True
             QTimer.singleShot(0, self.on_list_patches)
 
     def pick_keystore(self):
@@ -1637,6 +1663,8 @@ class App(QWidget):
             QMessageBox.information(self, "안내", "먼저 CLI/패치 번들을 다운로드하세요.")
             return
         self._pb_busy()
+        self._remember_selection()
+        if not self.dynamic_option_widgets: self.reset_select = True
         self._qin.put({
             "cmd":"list_patches",
             "cli":str(self.cli_jar),
@@ -1750,12 +1778,15 @@ class App(QWidget):
             if hasattr(self, "update_providers"):
                 self.update_providers.setChecked(False)
             if hasattr(self, "include_universal"):
+                self.include_universal.blockSignals(True)
                 self.include_universal.setChecked(False)
+                self.include_universal.blockSignals(False)
             self.change_pkg_input.setText("")
             if base_pkg: self.change_pkg_input.setPlaceholderText(f'e.g. {base_pkg + ".revanced"}')
             else: self.change_pkg_input.setPlaceholderText('패키지명을 변경하려면 "Change package name" 패치 활성화 필요')
         if hasattr(self, "exclusive"):
             self.exclusive.setChecked(True)
+        self.reset_select = True
         QTimer.singleShot(0, self.on_list_patches)
         if hasattr(self, "log"):
             self.log.append(f"[PRESET] 프리셋 적용: pkg={base_pkg or '(미지정)'}")
