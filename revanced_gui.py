@@ -279,6 +279,42 @@ def _adb_get_model_fallback(serial: str) -> str:
         return (out or "").strip()
     return ""
 
+def _validate_devices_ready(devs: List[Dict[str, str]], out_q: Queue, context: str) -> bool:
+    silent_contexts = {"env_check", "init"}
+    silent = context in silent_contexts
+    if not devs:
+        msg = f"[ADB] 연결된 기기가 없습니다. ({context})"
+        if silent:
+            out_q.put({"type": "log", "text": msg})
+        else:
+            out_q.put({"type": "fail", "error": msg})
+        return False
+    bad = [d for d in devs if d.get("state") != "device"]
+    if bad:
+        lines = []
+        for d in bad:
+            ser = d.get("serial", "")
+            st  = d.get("state", "")
+            mdl = d.get("model", "")
+            tip = {
+                "unauthorized": "디바이스에서 USB 디버깅을 승인해 주세요.",
+                "offline": "USB 케이블/드라이버 점검 후 재연결해 주세요.",
+                "recovery": "일반 부팅 상태로 전환 후 다시 시도해 주세요.",
+                "sideload": "일반 부팅 상태로 전환 후 다시 시도해 주세요.",
+                "bootloader": "일반 부팅 상태로 전환 후 다시 시도해 주세요.",
+            }.get(st, "")
+
+            lines.append(f" - {ser}  state={st} {f'({mdl})' if mdl else ''}  {tip}")
+        msg = "[ADB] 기기 연결 비정상\n" f"(context={context})\n" + "\n".join(lines)
+        if silent:
+            out_q.put({"type": "log", "text": msg})
+        else:
+            out_q.put({"type": "fail", "error": msg})
+        _adb_exec(["kill-server"])
+        _adb_start_server()
+        return False
+    return True
+
 def _adb_start_server(out_q: Optional[Queue]=None) -> bool:
     _adb_exec(["start-server"])
     code, out, err = _adb_exec(["get-state"])
@@ -717,7 +753,8 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         out_q.put({"type":"adb_path_set","ok":True,"path":adb_path})
                 _adb_start_server(out_q)
                 devs, raw = _adb_list_devices()
-                out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
+                if _validate_devices_ready(devs, out_q, context="env_check"):
+                    out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
                 out_q.put({"type":"done"})
             elif cmd == "install_java":
                 if _os_name()=="windows" and _which("winget"):
@@ -978,7 +1015,14 @@ def worker_loop(in_q: Queue, out_q: Queue):
             elif cmd == "adb_devices":
                 _adb_start_server(out_q)
                 devs, raw = _adb_list_devices()
-                out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
+                if _validate_devices_ready(devs, out_q, context="adb_devices"):
+                    out_q.put({"type":"adb_devices","devices":devs,"raw":raw})
+                out_q.put({"type":"done"})
+            elif cmd == "adb_devices_silent":
+                _adb_start_server(out_q)
+                devs, raw = _adb_list_devices()
+                if _validate_devices_ready(devs, out_q, context="init"):
+                    out_q.put({"type": "adb_devices", "devices": devs, "raw": raw})
                 out_q.put({"type":"done"})
             elif cmd == "adb_install_apk":
                 out_q.put({"type":"log","text":"[ADB] 설치중..."})
@@ -990,8 +1034,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                     continue
                 _adb_start_server(out_q)
                 devs, _ = _adb_list_devices()
-                if not devs:
-                    out_q.put({"type":"fail","error":"연결된 ADB 디바이스가 없습니다."})
+                if not _validate_devices_ready(devs, out_q, context="install"):
                     out_q.put({"type":"done"})
                     continue
                 if serial is None and len(devs) > 1:
@@ -1575,7 +1618,9 @@ class App(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, title, "", filt)
         if path:
             self.adb_path_edit.setText(path)
-            self.on_adb_refresh()
+            self._pb_busy()
+            self._qin.put({"cmd": "set_adb_path", "path": path})
+            self._qin.put({"cmd": "adb_devices_silent"})
 
     def on_download(self):
         self._pb_busy()
