@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor, QFontDatabase, QFont, QGuiApplication
 
-CLI_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-cli/releases/latest'
-PATCHES_RELEASE_URL = 'https://git.naijun.dev/api/v1/repos/revanced/revanced-patches-releases/releases/latest'
+CLI_RELEASE_URL = 'https://github.com/ReVanced/revanced-cli/releases/latest'
+PATCHES_RELEASE_URL = 'https://github.com/ReVanced/revanced-patches/releases/latest'
 PLATFORM_TOOLS_WIN_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 PLATFORM_TOOLS_MAC_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
 PLATFORM_TOOLS_LINUX_ZIP = "https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
@@ -435,7 +435,15 @@ def _make_executable(p: Path):
         pass
 
 def _get_latest_release(url: str):
-    r = requests.get(url, timeout=30)
+    GITHUB_REGEX = re.compile(r'^https?://(?:www\.)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/?')
+    match = GITHUB_REGEX.match(url)
+    if match:
+        owner = match.group('owner')
+        repo = match.group('repo')
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    else:
+        api_url = url
+    r = requests.get(api_url, timeout=30)
     r.raise_for_status()
     data = r.json()
     return data.get('tag_name') or '', data.get('assets') or []
@@ -864,9 +872,9 @@ def worker_loop(in_q: Queue, out_q: Queue):
             elif cmd == "download_components":
                 out_dir = Path(msg["out_dir"])
                 _ensure_dir(out_dir)
-                user_cli_url = (msg.get("cli_url") or "").strip()
-                user_rvp_url = (msg.get("rvp_url") or "").strip()
-                if user_cli_url:
+                user_cli_url = (msg.get("cli_url") or "").strip().rstrip("/")
+                user_rvp_url = (msg.get("rvp_url") or "").strip().rstrip("/")
+                if user_cli_url and not user_cli_url.endswith(("latest", "releases")):
                     url_cli = user_cli_url
                     name_cli = os.path.basename(url_cli.split("?")[0]) or "revanced-cli.jar"
                 else:
@@ -876,7 +884,7 @@ def worker_loop(in_q: Queue, out_q: Queue):
                         out_q.put({"type":"fail","error":"CLI .jar 없음"}); out_q.put({"type":"done"}); continue
                 cli_path = out_dir / name_cli
                 _download_file(url_cli, cli_path, out_q, target_key="cli")
-                if user_rvp_url:
+                if user_rvp_url and not user_rvp_url.endswith(("latest", "releases")):
                     url_rvp = user_rvp_url
                     name_rvp = os.path.basename(url_rvp.split("?")[0]) or "patches.rvp"
                 else:
